@@ -34,6 +34,14 @@ let
               passAsFile = passAsFileNames;
             }
           ) (builtins.concatStringsSep "\n" commands);
+
+        writeExeclineBin =
+          name: script:
+          pkgs.writeScriptBin name # execline
+            ''
+              #! ${lib.getExe' pkgs.execline "execlineb"}
+              ${script}
+            '';
       })
     ];
   };
