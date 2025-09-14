@@ -10,7 +10,7 @@ with lib;
 let
   cfg = config.dinit;
 
-  dinitServiceManRef = "See DINIT-SERVICE(5)";
+  # mkOption wrapper that sets description and default
   mkDinitOption =
     attrs:
     mkOption (
@@ -25,7 +25,7 @@ let
   serviceType = types.submodule {
     freeformType = types.attrsOf types.str;
     options = {
-      type = mkOption {
+      type = mkDinitOption {
         type = types.enum [
           "process"
           "bgprocess"
@@ -33,7 +33,6 @@ let
           "internal"
           "triggered"
         ];
-        description = dinitServiceManRef;
       };
       command = mkDinitOption {
         type = types.nullOr types.str;
