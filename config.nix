@@ -40,10 +40,10 @@ in
   config = {
     dinit.services.boot = {
       type = "internal";
-      depends-on = [ "nginx" ];
     };
     dinit.services.nginx = {
       type = "process";
+      rdepends-on = [ "boot" ];
       command = "${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr";
       restart = true;
       options = [ "shares-console" ];
