@@ -79,6 +79,7 @@ let
       };
       rdepends-on = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
+        description = "Reverse depends-on (like systemd's RequiredBy vs Requires)";
         # No apply function - processed and removed
       };
       depends-ms = mkDinitOption {
@@ -87,6 +88,7 @@ let
       };
       rdepends-ms = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
+        description = "Reverse depends-ms (like systemd's RequiredBy vs Requires)";
         # No apply function - processed and removed
       };
       waits-for = mkDinitOption {
@@ -95,6 +97,7 @@ let
       };
       rwaits-for = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
+        description = "Reverse waits-for (like systemd's RequiredBy vs Requires)";
         # No apply function - processed and removed
       };
       after = mkDinitOption {
