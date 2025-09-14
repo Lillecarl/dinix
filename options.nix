@@ -253,11 +253,6 @@ in
         } attrs;
     in
     {
-      # serviceDir = pkgs.writeMultipleFiles "dinit-configs" (
-      #   lib.mapAttrs (n: v: {
-      #     content = toDinitKeyBalue v;
-      #   }) config.dinit.services
-      # );
       serviceDir = pkgs.writeMultipleFiles "dinit-configs" (
         lib.pipe config.dinit.services [
           # Remove all null options
