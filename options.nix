@@ -235,7 +235,7 @@ in
     in
     {
       serviceDir = mkDerivationOption "dinit service directory";
-      userScript = mkDerivationOption "dinit script";
+      script = mkDerivationOption "dinit script";
     };
 
   options.lib = mkOption {
@@ -271,12 +271,11 @@ in
         ]
       );
 
-      userScript =
-        pkgs.writeScriptBin "dinit-user" # execline
+      script =
+        pkgs.writeExeclineBin "dinit-user" # execline
           ''
-            #! ${lib.getExe' pkgs.execline "execlineb"}
             elgetpositionals
-            ${lib.getExe' pkgs.dinit "dinit"} --user --services-dir ${config.out.serviceDir} $@
+            ${lib.getExe' pkgs.dinit "dinit"} --services-dir ${config.out.serviceDir} $@
           '';
     };
 }
