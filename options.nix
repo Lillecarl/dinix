@@ -8,8 +8,6 @@
 with lib;
 
 let
-  cfg = config.dinit;
-
   # mkOption wrapper that sets description and default
   mkDinitOption =
     attrs:
@@ -20,7 +18,8 @@ let
       }
       // attrs
     );
-  nullOrListApply = x: if lib.typeOf x != "null" then lib.concatStringsSep " " x else x;
+  # Module option apply function used to convert lists to space separated strings
+  nullOrListApply = x: if lib.typeOf x == "list" then lib.concatStringsSep " " x else x;
 
   serviceType = types.submodule {
     freeformType = types.attrsOf types.str;
@@ -261,7 +260,9 @@ in
       # );
       serviceDir = pkgs.writeMultipleFiles "dinit-configs" (
         lib.pipe config.dinit.services [
+          # Remove all null options
           (lib.filterAttrsRecursive (n: v: v != null))
+          # Set content to dinit style key = value format
           (lib.mapAttrs (
             n: v: {
               content = toDinitKeyBalue v;
