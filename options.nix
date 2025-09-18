@@ -352,6 +352,7 @@ in
     default = { };
   };
 
+  config.dinit.services.boot.type = lib.mkDefault "internal";
   config.dinit.finalServices = processReverseDependencies config.dinit.services;
 
   config.out =
