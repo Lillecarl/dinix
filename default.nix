@@ -1,6 +1,6 @@
 {
   pkgs ? import <nixpkgs> { },
-  modules ? [ ./config.nix ],
+  modules ? [ ./demo.nix ],
 }:
 let
   pkgs' = pkgs.extend (import ./overlay.nix);
