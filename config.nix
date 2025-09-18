@@ -40,7 +40,7 @@ in
   config = {
     dinit.services.boot = {
       type = "internal";
-      depends-on = [ "nginx" ];
+      "depends-on.d" = [ "nginx" ];
     };
     dinit.services.nginx = {
       type = "process";
