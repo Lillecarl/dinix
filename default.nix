@@ -1,12 +1,15 @@
+{
+  pkgs ? import <nixpkgs> { },
+  modules ? [ ./config.nix ],
+}:
 let
-  pkgs = import <nixpkgs> { };
   lib = pkgs.lib;
 
   eval = lib.evalModules {
     modules = [
       ./options.nix
-      ./config.nix
-    ];
+    ]
+    ++ modules;
 
     specialArgs = { inherit pkgs; };
   };
