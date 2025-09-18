@@ -91,6 +91,7 @@ let
           "internal"
           "triggered"
         ];
+        default = "process";
       };
       command = mkDinitOption {
         type = types.nullOr types.str;
