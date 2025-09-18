@@ -3,7 +3,8 @@
   modules ? [ ./config.nix ],
 }:
 let
-  lib = pkgs.lib;
+  pkgs' = pkgs.extend (import ./overlay.nix);
+  lib = pkgs'.lib;
 
   eval = lib.evalModules {
     modules = [
@@ -11,10 +12,11 @@ let
     ]
     ++ modules;
 
-    specialArgs = { inherit pkgs; };
+    specialArgs = { pkgs = pkgs'; };
   };
 in
 {
-  inherit pkgs lib eval;
+  pkgs = pkgs';
+  inherit lib eval;
   inherit (eval) options config;
 }
