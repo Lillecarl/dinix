@@ -298,7 +298,8 @@ in
           "-d"
           ".d"
         ];
-      # Apply mapAttrs' to all options of all services
+      # Apply mapAttrs' (prime) to all options of all services. "function" must
+      # return a nameValuePair.
       mapServicesOptions =
         function: services:
         (lib.mapAttrs (serviceName: serviceValue: lib.mapAttrs' function serviceValue) services);
