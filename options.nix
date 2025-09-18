@@ -274,6 +274,12 @@ let
       run-in-cgroup = mkDinitOption {
         type = types.nullOr types.path;
       };
+      "@include" = mkDinitOption {
+        type = types.nullOr types.path;
+      };
+      "@include-opt" = mkDinitOption {
+        type = types.nullOr types.path;
+      };
     };
   };
 in
@@ -315,11 +321,26 @@ in
   config.dinit.services.boot.type = lib.mkDefault "internal";
   config.out =
     let
-      toDinitKeyValue =
+      toDinitService =
         attrs:
-        lib.generators.toKeyValue {
-          mkKeyValue = lib.generators.mkKeyValueDefault { } " = ";
-        } attrs;
+        let
+          kvAttrs = lib.filterAttrs (n: v: !lib.hasPrefix "@" n) attrs;
+          metaAttrs = lib.filterAttrs (n: v: lib.hasPrefix "@" n) attrs;
+
+          keyValueStr = lib.generators.toKeyValue {
+            mkKeyValue = lib.generators.mkKeyValueDefault { } " = ";
+          } kvAttrs;
+
+          metaValueStr = lib.generators.toKeyValue {
+            mkKeyValue = lib.generators.mkKeyValueDefault { } " ";
+          } metaAttrs;
+
+        in
+        ''
+          # dinit service configuration see dinit-service(5)
+          ${metaValueStr}
+          ${keyValueStr}
+        '';
     in
     {
       serviceDir = writeMultipleFiles "dinit-configs" (
@@ -329,7 +350,7 @@ in
           # Set content to dinit style key = value format
           (lib.mapAttrs (
             n: v: {
-              content = toDinitKeyValue v;
+              content = toDinitService v;
             }
           ))
         ]
