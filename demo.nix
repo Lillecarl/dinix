@@ -40,14 +40,14 @@ in
   config = {
     dinit.services.boot = {
       type = "internal";
-      "depends-on.d" = [ "nginx" ];
+      depends-on-d = [ "nginx" ];
     };
     dinit.services.nginx = {
       type = "process";
       command = "${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr";
       restart = true;
       options = [ "shares-console" ];
-      "@include-opt" = "/doesnt/exist";
+      include-opt = "/doesnt/exist";
     };
   };
 }

@@ -98,17 +98,14 @@ let
       waits-for = mkDinitOption {
         type = types.nullOr types.str;
       };
-      "depends-on.d" = mkDinitOption {
+      depends-on-d = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
-        apply = listToFileAttrs;
       };
-      "depends-ms.d" = mkDinitOption {
+      depends-ms-d = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
-        apply = listToFileAttrs;
       };
-      "waits-for.d" = mkDinitOption {
+      waits-for-d = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
-        apply = listToFileAttrs;
       };
       after = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
@@ -232,10 +229,10 @@ let
       run-in-cgroup = mkDinitOption {
         type = types.nullOr types.path;
       };
-      "@include" = mkDinitOption {
+      include = mkDinitOption {
         type = types.nullOr types.path;
       };
-      "@include-opt" = mkDinitOption {
+      include-opt = mkDinitOption {
         type = types.nullOr types.path;
       };
     };
@@ -253,6 +250,13 @@ in
       type = types.package;
       default = pkgs.dinit;
       description = "dinit package to use";
+    };
+
+    finalServices = mkOption {
+      type = types.attrsOf types.anything;
+      default = { };
+      description = "cleaned dinit services configuration";
+      internal = true;
     };
   };
 
@@ -277,6 +281,47 @@ in
   };
 
   config.dinit.services.boot.type = lib.mkDefault "internal";
+  config.dinit.finalServices =
+    let
+      renameOpts = {
+        "depends-on-d" = "depends-on.d";
+        "depends-ms-d" = "depends-ms.d";
+        "waits-for-d" = "waits-for.d";
+        "include" = "@include";
+        "include-opt" = "@include-opt";
+      };
+      # Check if option has the -d suffix, is a directory option
+      # isDirOpt = optionName: lib.hasSuffix "-d" optionName;
+      isDirOpt =
+        optionName:
+        lib.any (x: lib.hasSuffix x optionName) [
+          "-d"
+          ".d"
+        ];
+      # Apply mapAttrs' to all options of all services
+      mapServicesOptions =
+        function: services:
+        (lib.mapAttrs (serviceName: serviceValue: lib.mapAttrs' function serviceValue) services);
+    in
+    lib.pipe config.dinit.services [
+      # Convert options ending in .d from listOf str to derivation with files
+      # named after str's in list
+      (mapServicesOptions (
+        optionName: optionValue: {
+          name = optionName;
+          value = if isDirOpt optionName then listToFileAttrs optionValue else optionValue;
+        }
+      ))
+      # Rename options from nix-friendly names/keys to dinit keys
+      (mapServicesOptions (
+        optionName: optionValue: {
+          name = if lib.hasAttr optionName renameOpts then renameOpts.${optionName} else optionName;
+          value = optionValue;
+        }
+      ))
+      # Remove all null options
+      (lib.filterAttrsRecursive (n: v: v != null))
+    ];
   config.out =
     let
       toDinitService =
@@ -294,17 +339,19 @@ in
           } metaAttrs;
 
         in
+        # dinit
         ''
           # dinit service configuration see dinit-service(5)
-          ${metaValueStr}
+
+          # Nix rendered configuration:
           ${keyValueStr}
+          # Optional includes for overrides or other shenanigans:
+          ${metaValueStr}
         '';
     in
     {
       serviceDir = pkgs.writeMultipleFiles "dinit-configs" (
-        lib.pipe config.dinit.services [
-          # Remove all null options
-          (lib.filterAttrsRecursive (n: v: v != null))
+        lib.pipe config.dinit.finalServices [
           # Set content to dinit style key = value format
           (lib.mapAttrs (
             n: v: {
