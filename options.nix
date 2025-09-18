@@ -51,6 +51,22 @@ let
         ${script}
       '';
 
+  listToFileAttrs =
+    list:
+    if list == null then
+      list
+    else
+      writeMultipleFiles "dinit-depdir.d" (
+        lib.listToAttrs (
+          map (name: {
+            inherit name;
+            value = {
+              content = "";
+            };
+          }) list
+        )
+      );
+
   # mkOption wrapper that sets description and default
   mkDinitOption =
     attrs:
@@ -116,16 +132,25 @@ let
         type = types.nullOr types.path;
       };
       depends-on = mkDinitOption {
-        type = types.nullOr (types.listOf types.str);
-        apply = nullOrListApply;
+        type = types.nullOr types.str;
       };
       depends-ms = mkDinitOption {
-        type = types.nullOr (types.listOf types.str);
-        apply = nullOrListApply;
+        type = types.nullOr types.str;
       };
       waits-for = mkDinitOption {
+        type = types.nullOr types.str;
+      };
+      "depends-on.d" = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
-        apply = nullOrListApply;
+        apply = listToFileAttrs;
+      };
+      "depends-ms.d" = mkDinitOption {
+        type = types.nullOr (types.listOf types.str);
+        apply = listToFileAttrs;
+      };
+      "waits-for.d" = mkDinitOption {
+        type = types.nullOr (types.listOf types.str);
+        apply = listToFileAttrs;
       };
       after = mkDinitOption {
         type = types.nullOr (types.listOf types.str);
