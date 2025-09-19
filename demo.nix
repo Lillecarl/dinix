@@ -38,11 +38,11 @@ let
 in
 {
   config = {
-    dinit.services.boot = {
+    services.boot = {
       type = "internal";
       depends-on-d = [ "nginx" ];
     };
-    dinit.services.nginx = {
+    services.nginx = {
       type = "process";
       command = "${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr";
       restart = true;

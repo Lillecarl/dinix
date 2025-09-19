@@ -8,22 +8,6 @@
 with lib;
 
 let
-  listToFileAttrs =
-    list:
-    if list == null then
-      list
-    else
-      pkgs.writeMultipleFiles "dinit-depdir.d" (
-        lib.listToAttrs (
-          map (name: {
-            inherit name;
-            value = {
-              content = "";
-            };
-          }) list
-        )
-      );
-
   # mkOption wrapper that sets description and default
   mkDinitOption =
     attrs:
@@ -34,6 +18,7 @@ let
       }
       // attrs
     );
+
   # Module option apply function used to convert lists to space separated strings
   nullOrListApply = x: if lib.typeOf x == "list" then lib.concatStringsSep " " x else x;
 
@@ -246,179 +231,164 @@ let
   );
 in
 {
-  options.dinit = {
-    services = mkOption {
-      type = types.attrsOf serviceType;
-      default = { };
-      description = "dinit services configuration";
-    };
-
-    package = mkOption {
-      type = types.package;
-      default = pkgs.dinit;
-      description = "dinit package to use";
-    };
-
-    processedServices = mkOption {
-      type = types.anything;
-      default = { };
-      description = "processed dinit services configuration";
-      internal = true;
-    };
+  options.services = mkOption {
+    type = types.attrsOf serviceType;
+    default = { };
+    description = "dinit services configuration";
   };
 
-  options.out =
-    let
-      mkDerivationOption =
-        name:
-        lib.mkOption {
-          description = name;
-          type = types.package;
-        };
-    in
-    {
-      serviceDir = mkDerivationOption "dinit service directory";
-      script = mkDerivationOption "dinit script";
-    };
+  options.package = mkOption {
+    type = types.package;
+    default = pkgs.dinit;
+    description = "dinit package to use";
+  };
 
-  options.lib = mkOption {
+  options.dinitLauncher = mkOption {
+    description = "dinit execline launcher script";
+    type = types.package;
+  };
+
+  options.internal = mkOption {
     type = types.attrs;
-    description = "Put whatever you want in here";
+    description = ''
+      Here you can find various intermediate representations for mangling
+      options into a derivation containing a complete dinit configuration
+    '';
+    internal = true;
     default = { };
   };
 
-  config.dinit.services.boot.type = lib.mkDefault "internal";
-  config.dinit.processedServices =
-    let
-      renameOpts = {
-        "depends-on-d" = "depends-on.d";
-        "depends-ms-d" = "depends-ms.d";
-        "waits-for-d" = "waits-for.d";
-        "include" = "@include";
-        "include-opt" = "@include-opt";
-      };
-      # Check if option has the -d suffix, is a directory option
-      isDirOpt =
-        optionName:
-        lib.any (x: lib.hasSuffix x optionName) [
-          "-d"
-          ".d"
-        ];
-      # Apply mapAttrs' (prime) to all options of all services. "function" must
-      # return a nameValuePair.
-      mapServicesOptions =
-        function: services:
-        (lib.mapAttrs (serviceName: serviceValue: lib.mapAttrs' function serviceValue) services);
+  # Make boot service internal by default
+  config.services.boot.type = lib.mkDefault "internal";
 
-      # Transform a single service's dependencies into path-based attrset
-      serviceToPaths =
-        serviceName: serviceAttrs: depType:
-        builtins.listToAttrs (
-          map (dep: {
-            name = "${serviceName}-${depType}/${dep}";
-            value = {
-              content = "";
-            };
-          }) serviceAttrs.${depType} or [ ]
-        );
+  # Intermediate steps for going from Nix options into dinit configuration derivation
+  config.internal = rec {
+    # Set of options to rename from their easily typed Nix names
+    # into their corresponding dinit names
+    renameOpts = {
+      "depends-on-d" = "depends-on.d";
+      "depends-ms-d" = "depends-ms.d";
+      "waits-for-d" = "waits-for.d";
+      "include" = "@include";
+      "include-opt" = "@include-opt";
+    };
 
-      # Process all services for all dependency types
-      extractDeps =
-        services: depTypes:
-        builtins.foldl' (
-          acc: depType:
-          builtins.foldl' (
-            acc2: serviceName: acc2 // (serviceToPaths serviceName services.${serviceName} depType)
-          ) acc (builtins.attrNames services)
-        ) { } depTypes;
-    in
-    rec {
-      cleaned = lib.pipe config.dinit.services [
-        # Rename options from nix-friendly names/keys to dinit keys
-        (mapServicesOptions (
-          optionName: optionValue: {
-            name = if lib.hasAttr optionName renameOpts then renameOpts.${optionName} else optionName;
-            value = optionValue;
+    # Check if option has the -d suffix, is a directory option
+    isDirOpt =
+      optionName:
+      lib.any (x: lib.hasSuffix x optionName) [
+        "-d"
+        ".d"
+      ];
+
+    # Apply mapAttrs' (prime) to all options of all services. "function" must
+    # return a nameValuePair.
+    mapServicesOptions =
+      function: services:
+      (lib.mapAttrs (serviceName: serviceValue: lib.mapAttrs' function serviceValue) services);
+
+    # Extracts .d lists into a flattened attrset for creating dependency files.
+    extractDAttributes =
+      services:
+      lib.foldlAttrs (
+        acc: serviceName: service:
+        lib.foldlAttrs (
+          acc': attrName: deps:
+          if lib.hasSuffix ".d" attrName then
+            acc'
+            // lib.listToAttrs (
+              map (dep: {
+                name = "${serviceName}-${attrName}/${dep}";
+                value = {
+                  content = "";
+                };
+              }) deps
+            )
+          else
+            acc'
+        ) acc service
+      ) { } services;
+
+    # Converts a Nix dinit spec to a dinit "KV" spec
+    toDinitService =
+      attrs:
+      let
+        kvAttrs = lib.filterAttrs (n: v: !lib.hasPrefix "@" n && lib.typeOf != "list") attrs;
+        metaAttrs = lib.filterAttrs (n: v: lib.hasPrefix "@" n) attrs;
+
+        keyValueStr = lib.generators.toKeyValue {
+          mkKeyValue = lib.generators.mkKeyValueDefault { } " = ";
+        } kvAttrs;
+
+        metaValueStr = lib.generators.toKeyValue {
+          mkKeyValue = lib.generators.mkKeyValueDefault { } " ";
+        } metaAttrs;
+
+      in
+      # dinit
+      ''
+        # dinit service configuration see dinit-service(5)
+
+        # Nix rendered configuration:
+        ${keyValueStr}
+        # Optional includes for overrides or other shenanigans:
+        ${metaValueStr}
+      '';
+
+    # Rename option names and remove null option values
+    cleaned = lib.pipe config.services [
+      # Rename options from nix-friendly names/keys to dinit keys
+      (mapServicesOptions (
+        optionName: optionValue: {
+          name = if lib.hasAttr optionName renameOpts then renameOpts.${optionName} else optionName;
+          value = optionValue;
+        }
+      ))
+      # Remove all null options
+      (lib.filterAttrsRecursive (n: v: v != null))
+    ];
+
+    # extract .d options into attrset
+    deps = lib.pipe cleaned [
+      extractDAttributes
+    ];
+
+    final = lib.pipe cleaned [
+      # Convert diropt into directory path
+      (lib.mapAttrs (
+        serviceName: serviceValue:
+        lib.mapAttrs (
+          optionName: optionValue: if isDirOpt optionName then "${serviceName}-${optionName}" else optionValue
+        ) serviceValue
+      ))
+      # Remove name option since it's only internal
+      (lib.mapAttrs (
+        serviceName: serviceValue:
+        lib.filterAttrs (optionName: optionValue: optionName != "name") serviceValue
+      ))
+    ];
+
+    dinitConfig = pkgs.writeMultipleFiles "dinitConfig" (
+
+      # Intermediate steps for going from Nix options into dinit configuration derivation
+      lib.pipe config.internal.final [
+        # Set content to dinit style key = value format
+        (lib.mapAttrs (
+          n: v: {
+            content = toDinitService v;
           }
         ))
-        # Remove all null options
-        (lib.filterAttrsRecursive (n: v: v != null))
-      ];
-      deps = lib.pipe cleaned [
-        # Remove all null options
-        (lib.filterAttrsRecursive (n: v: v != null))
-        (
-          x:
-          extractDeps x [
-            "depends-on.d"
-            "depends-ms.d"
-            "waits-for.d"
-          ]
-        )
-      ];
-      final = lib.pipe cleaned [
-        # Convert diropt into directory path
-        (lib.mapAttrs (
-          serviceName: serviceValue:
-          lib.mapAttrs (
-            optionName: optionValue:
-            if isDirOpt optionName && optionValue != null then "${serviceName}-${optionName}" else optionValue
-          ) serviceValue
-        ))
-        # Remove name option since it's only internal
-        (lib.mapAttrs (
-          serviceName: serviceValue:
-          lib.filterAttrs (optionName: optionValue: optionName != "name") serviceValue
-        ))
-      ];
-    };
+      ]
 
-  config.out =
-    let
-      # Converts a Nix dinit spec to a dinit "KV" spec
-      toDinitService =
-        attrs:
-        let
-          kvAttrs = lib.filterAttrs (n: v: !lib.hasPrefix "@" n && lib.typeOf != "list") attrs;
-          metaAttrs = lib.filterAttrs (n: v: lib.hasPrefix "@" n) attrs;
+      # Intermediate steps for going from Nix options into dinit configuration derivation
+      // config.internal.deps
+    );
+  };
 
-          keyValueStr = lib.generators.toKeyValue {
-            mkKeyValue = lib.generators.mkKeyValueDefault { } " = ";
-          } kvAttrs;
-
-          metaValueStr = lib.generators.toKeyValue {
-            mkKeyValue = lib.generators.mkKeyValueDefault { } " ";
-          } metaAttrs;
-
-        in
-        # dinit
-        ''
-          # dinit service configuration see dinit-service(5)
-
-          # Nix rendered configuration:
-          ${keyValueStr}
-          # Optional includes for overrides or other shenanigans:
-          ${metaValueStr}
-        '';
-    in
-    {
-      serviceDir = pkgs.writeMultipleFiles "dinit-configs" (
-        lib.pipe config.dinit.processedServices.final [
-          # Set content to dinit style key = value format
-          (lib.mapAttrs (
-            n: v: {
-              content = toDinitService v;
-            }
-          ))
-        ]
-        // config.dinit.processedServices.deps
-      );
-
-      script =
-        pkgs.writeExeclineBin "dinit-user" # execline
-          ''
-            elgetpositionals
-            ${lib.getExe' pkgs.dinit "dinit"} --services-dir ${config.out.serviceDir} $@
-          '';
-    };
+  config.dinitLauncher =
+    pkgs.writeExeclineBin "dinitLauncher" # execline
+      ''
+        elgetpositionals
+        ${lib.getExe' pkgs.dinit "dinit"} --services-dir ${config.internal.dinitConfig} $@
+      '';
 }
