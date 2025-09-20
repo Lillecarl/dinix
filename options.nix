@@ -199,33 +199,20 @@ let
           );
           apply = nullOrListApply;
         };
-        inittab-id = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        inittab-line = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        rlimit-nofile = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        rlimit-core = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        rlimit-data = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        rlimit-addrspace = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        run-in-cgroup = mkDinitOption {
-          type = types.nullOr types.path;
-        };
         include = mkDinitOption {
           type = types.nullOr types.path;
         };
         include-opt = mkDinitOption {
           type = types.nullOr types.path;
         };
+        # dinit options we won't implement:
+        # * inittab-id
+        # * inittab-line
+        # * rlimit-nofile
+        # * rlimit-core
+        # * rlimit-data
+        # * rlimit-addrspace
+        # * run-in-cgroup
       };
     }
   );
