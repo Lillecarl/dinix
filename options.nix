@@ -388,7 +388,7 @@ in
       '';
 
     # Rename option names and remove null option values
-    cleaned = lib.pipe config.services [
+    cleanedServices = lib.pipe config.services [
       # Rename options from nix-friendly names/keys to dinit keys
       (mapServicesOptions (
         optionName: optionValue: {
@@ -401,9 +401,9 @@ in
     ];
 
     # extract .d options into attrset
-    deps = extractDAttributes cleaned;
+    deps = extractDAttributes cleanedServices;
 
-    final = lib.pipe cleaned [
+    finalServices = lib.pipe cleanedServices [
       # Convert diropt into directory path
       (lib.mapAttrs (
         serviceName: serviceValue:
@@ -426,7 +426,7 @@ in
       ))
     ];
 
-    env-files = lib.pipe cleaned [
+    env-files = lib.pipe cleanedServices [
       # Only if service has env-file option set
       (filterAttrs (n: v: (v.env-file or false) != false))
       # Make env-files available under env-files/servicename in services-dir
@@ -444,7 +444,7 @@ in
         # Service files
         (lib.mapAttrs (n: v: {
           content = toDinitService v;
-        }) config.internal.final)
+        }) config.internal.finalServices)
         # Dependency files
         // config.internal.deps
         # Env files
