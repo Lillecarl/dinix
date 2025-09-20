@@ -355,21 +355,27 @@ in
       ))
     ];
 
-    dinitConfig = pkgs.writeMultipleFiles "dinitConfig" (
+    dinitConfig = pkgs.writeMultipleFiles {
+      name = "dinitConfig";
+      files = (
+        # Intermediate steps for going from Nix options into dinit configuration derivation
+        lib.pipe config.internal.final [
+          # Set content to dinit style key = value format
+          (lib.mapAttrs (
+            n: v: {
+              content = toDinitService v;
+            }
+          ))
+        ]
+        # Intermediate steps for going from Nix options into dinit configuration derivation
+        // config.internal.deps
+      );
+      extraCommands = # bash
+      ''
+        ${lib.getExe' config.package "dinitcheck"} --services-dir $out
+      '';
+    };
 
-      # Intermediate steps for going from Nix options into dinit configuration derivation
-      lib.pipe config.internal.final [
-        # Set content to dinit style key = value format
-        (lib.mapAttrs (
-          n: v: {
-            content = toDinitService v;
-          }
-        ))
-      ]
-
-      # Intermediate steps for going from Nix options into dinit configuration derivation
-      // config.internal.deps
-    );
   };
 
   config.dinitLauncher =

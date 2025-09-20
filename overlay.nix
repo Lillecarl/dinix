@@ -1,12 +1,17 @@
 _: pkgs:
 let
   lib = pkgs.lib;
-in{
+in
+{
   # Derivation that writes multiple files
   writeMultipleFiles =
-    name: files:
+    {
+      name,
+      files,
+      extraCommands ? "",
+    }:
     let
-      fileList = pkgs.lib.mapAttrsToList (path: file: {
+      fileList = lib.mapAttrsToList (path: file: {
         inherit path;
         content = file.content or file;
         mode = if file.executable or false then "755" else file.mode or "644";
@@ -14,7 +19,7 @@ in{
 
       # Create attribute names for passAsFile
       passAsFileAttrs = builtins.listToAttrs (
-        pkgs.lib.imap0 (i: file: {
+        lib.imap0 (i: file: {
           name = "file${toString i}";
           value = file.content;
         }) fileList
@@ -22,11 +27,11 @@ in{
 
       passAsFileNames = builtins.attrNames passAsFileAttrs;
 
-      commands = pkgs.lib.imap0 (i: file: ''
+      commands = (lib.imap0 (i: file: ''
         mkdir -p $out/$(dirname "${file.path}")
         cp "$file${toString i}Path" $out/${file.path}
         chmod ${file.mode} $out/${file.path}
-      '') fileList;
+      '') fileList) ++ (lib.toList extraCommands);
 
     in
     pkgs.runCommand name (
