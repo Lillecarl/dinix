@@ -38,6 +38,11 @@ let
 in
 {
   config = {
+    env-file = {
+      variables = {
+        "DINITENV" = "DINITENV";
+      };
+    };
     services.boot = {
       type = "internal";
       depends-on-d = [ "nginx" ];
@@ -48,6 +53,11 @@ in
       restart = true;
       options = [ "shares-console" ];
       include-opt = "/doesnt/exist";
+      env-file = {
+        variables = {
+          "NGINXENV" = "NGINXENV";
+        };
+      };
     };
   };
 }

@@ -22,6 +22,61 @@ let
   # Module option apply function used to convert lists to space separated strings
   nullOrListApply = x: if lib.typeOf x == "list" then lib.concatStringsSep " " x else x;
 
+  # Environment configuration type.
+  envfileType = types.submodule (
+    { name, config, ... }:
+    {
+      options = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = "If we should add env-file argument to launcher script";
+        };
+        clear = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Clear all environment variables";
+        };
+        variables = mkOption {
+          type = types.attrsOf types.str;
+          default = { };
+          description = "Environment variables to set";
+        };
+        unset = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = "List of variables to unset";
+        };
+        import = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = "List of variables to import";
+        };
+        file = mkOption {
+          type = types.package;
+          description = "Rendered env-file";
+          internal = true;
+          apply = toString;
+        };
+      };
+      config = {
+        # Set enable if anything isn't it's default value
+        enable = lib.mkDefault (
+          config.clear == true || config.variables != { } || config.unset != [ ] || config.import != [ ]
+        );
+        file = pkgs.writeText "dinitEnvironment" ''
+          # dinit environment file. See DINIT(8)
+          ${lib.optionalString (config.clear) "!clear"}
+          ${lib.concatLines (lib.map (x: "!unset ${x}") config.unset)}
+          ${lib.generators.toKeyValue {
+            mkKeyValue = lib.generators.mkKeyValueDefault { } "=";
+          } config.variables}
+          ${lib.concatLines (lib.map (x: "!import ${x}") config.import)}
+        '';
+      };
+    }
+  );
+
   serviceType = types.submodule (
     { name, ... }:
     {
@@ -54,7 +109,7 @@ let
           type = types.nullOr (types.either types.str types.int);
         };
         env-file = mkDinitOption {
-          type = types.nullOr types.path;
+          type = types.nullOr (types.either types.path envfileType);
         };
         restart = mkDinitOption {
           type = types.nullOr (types.either (types.enum [ "on-failure" ]) types.bool);
@@ -230,6 +285,11 @@ in
     description = "dinit package to use";
   };
 
+  options.env-file = mkOption {
+    type = types.either types.path envfileType;
+    default = { };
+  };
+
   options.dinitLauncher = mkOption {
     description = "dinit execline launcher script";
     type = types.package;
@@ -348,6 +408,14 @@ in
           optionName: optionValue: if isDirOpt optionName then "${serviceName}-${optionName}" else optionValue
         ) serviceValue
       ))
+      # Convert env-file attrs to filePath
+      # TODO: Merge these into the services-dir derivation
+      (lib.mapAttrs (
+        serviceName: serviceValue:
+        lib.mapAttrs (
+          optionName: optionValue: if optionName == "env-file" then optionValue.file else optionValue
+        ) serviceValue
+      ))
       # Remove name option since it's only internal
       (lib.mapAttrs (
         serviceName: serviceValue:
@@ -355,8 +423,8 @@ in
       ))
     ];
 
-    dinitConfig = pkgs.writeMultipleFiles {
-      name = "dinitConfig";
+    services-dir = pkgs.writeMultipleFiles {
+      name = "services-dir";
       files = (
         # Intermediate steps for going from Nix options into dinit configuration derivation
         lib.pipe config.internal.final [
@@ -371,9 +439,9 @@ in
         // config.internal.deps
       );
       extraCommands = # bash
-      ''
-        ${lib.getExe' config.package "dinitcheck"} --services-dir $out
-      '';
+        ''
+          ${lib.getExe' config.package "dinitcheck"} ${lib.optionalString config.env-file.enable "--env-file ${config.env-file.file}"} --services-dir $out
+        '';
     };
 
   };
@@ -382,6 +450,6 @@ in
     pkgs.writeExeclineBin "dinitLauncher" # execline
       ''
         elgetpositionals
-        ${lib.getExe' pkgs.dinit "dinit"} --services-dir ${config.internal.dinitConfig} $@
+        ${lib.getExe' pkgs.dinit "dinit"} ${lib.optionalString config.env-file.enable "--env-file ${config.env-file.file}"} --services-dir ${config.internal.services-dir} $@
       '';
 }
