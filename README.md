@@ -13,6 +13,8 @@ See [DINIT-SERVICE(5)](https://davmac.org/projects/dinit/man-pages-html/dinit-se
 
 These mappings are made so you don't have to wrap attribute names in quotes.
 
+Any settings not specificied in dinix will be passed through as "str" type.
+
 ## How to test
 Clone & cd repo, run. Which will launch nginx on port 8080 echoing Hello World.
 ```
