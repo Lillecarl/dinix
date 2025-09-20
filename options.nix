@@ -108,7 +108,7 @@ let
           type = types.nullOr types.str;
         };
         working-dir = mkDinitOption {
-          type = types.nullOr types.str;
+          type = types.nullOr types.path;
         };
         run-as = mkDinitOption {
           type = types.nullOr (types.either types.str types.int);
