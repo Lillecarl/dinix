@@ -341,28 +341,6 @@ in
       function: services:
       (lib.mapAttrs (serviceName: serviceValue: lib.mapAttrs' function serviceValue) services);
 
-    # Extracts .d lists into a flattened attrset for creating dependency files.
-    extractDAttributes =
-      services:
-      lib.foldlAttrs (
-        acc: serviceName: service:
-        lib.foldlAttrs (
-          acc': attrName: deps:
-          if lib.hasSuffix ".d" attrName then
-            acc'
-            // lib.listToAttrs (
-              map (dep: {
-                name = "${serviceName}-${attrName}/${dep}";
-                value = {
-                  content = "";
-                };
-              }) deps
-            )
-          else
-            acc'
-        ) acc service
-      ) { } services;
-
     # Converts a Nix dinit spec to a dinit "KV" spec
     toDinitService =
       attrs:
@@ -391,6 +369,8 @@ in
 
     # Rename option names and remove null option values
     cleanedServices = lib.pipe config.services [
+      # Remove all null options
+      (lib.filterAttrsRecursive (n: v: v != null))
       # Rename options from nix-friendly names/keys to dinit keys
       (mapServicesOptions (
         optionName: optionValue: {
@@ -398,12 +378,7 @@ in
           value = optionValue;
         }
       ))
-      # Remove all null options
-      (lib.filterAttrsRecursive (n: v: v != null))
     ];
-
-    # extract .d options into attrset
-    deps = extractDAttributes cleanedServices;
 
     finalServices = lib.pipe cleanedServices [
       # Convert diropt into directory path
@@ -428,7 +403,32 @@ in
       ))
     ];
 
-    env-files = lib.pipe cleanedServices [
+    # Convert mangled service descriptions into files
+    serviceFiles = lib.mapAttrs (n: v: {
+      content = toDinitService v;
+    }) config.internal.finalServices;
+
+    # extract .d options into attrset
+    depsFiles = lib.foldlAttrs (
+      acc: serviceName: service:
+      lib.foldlAttrs (
+        acc': attrName: deps:
+        if lib.hasSuffix ".d" attrName then
+          acc'
+          // lib.listToAttrs (
+            map (dep: {
+              name = "${serviceName}-${attrName}/${dep}";
+              value = {
+                content = "";
+              };
+            }) deps
+          )
+        else
+          acc'
+      ) acc service
+    ) { } cleanedServices;
+
+    envFiles = lib.pipe cleanedServices [
       # Only if service has env-file option set
       (filterAttrs (n: v: (v.env-file or false) != false))
       # Make env-files available under env-files/servicename in services-dir
@@ -440,17 +440,16 @@ in
       ))
     ];
 
+    # Write service files and friends to disk
     services-dir = pkgs.writeMultipleFiles {
       name = "services-dir";
       files = (
         # Service files
-        (lib.mapAttrs (n: v: {
-          content = toDinitService v;
-        }) config.internal.finalServices)
+        serviceFiles
         # Dependency files
-        // config.internal.deps
+        // config.internal.depsFiles
         # Env files
-        // config.internal.env-files
+        // config.internal.envFiles
       );
       # Config verification
       extraCommands = # bash
