@@ -52,11 +52,15 @@ let
           default = [ ];
           description = "List of variables to import";
         };
+        text = mkOption {
+          type = types.str;
+          description = "Rendered env-file text";
+          internal = true;
+        };
         file = mkOption {
           type = types.package;
-          description = "Rendered env-file";
+          description = "Rendered env-file file";
           internal = true;
-          apply = toString;
         };
       };
       config = {
@@ -64,7 +68,7 @@ let
         enable = lib.mkDefault (
           config.clear == true || config.variables != { } || config.unset != [ ] || config.import != [ ]
         );
-        file = pkgs.writeText "dinitEnvironment" ''
+        text = ''
           # dinit environment file. See DINIT(8)
           ${lib.optionalString (config.clear) "!clear"}
           ${lib.concatLines (lib.map (x: "!unset ${x}") config.unset)}
@@ -73,6 +77,7 @@ let
           } config.variables}
           ${lib.concatLines (lib.map (x: "!import ${x}") config.import)}
         '';
+        file = pkgs.writeText "env-file" config.text;
       };
     }
   );
@@ -396,9 +401,7 @@ in
     ];
 
     # extract .d options into attrset
-    deps = lib.pipe cleaned [
-      extractDAttributes
-    ];
+    deps = extractDAttributes cleaned;
 
     final = lib.pipe cleaned [
       # Convert diropt into directory path
@@ -408,12 +411,12 @@ in
           optionName: optionValue: if isDirOpt optionName then "${serviceName}-${optionName}" else optionValue
         ) serviceValue
       ))
-      # Convert env-file attrs to filePath
-      # TODO: Merge these into the services-dir derivation
+      # Convert env-file attrs to file path
       (lib.mapAttrs (
         serviceName: serviceValue:
         lib.mapAttrs (
-          optionName: optionValue: if optionName == "env-file" then optionValue.file else optionValue
+          optionName: optionValue:
+          if optionName == "env-file" then "env-files/${serviceName}.env" else optionValue
         ) serviceValue
       ))
       # Remove name option since it's only internal
@@ -423,21 +426,31 @@ in
       ))
     ];
 
+    env-files = lib.pipe cleaned [
+      # Only if service has env-file option set
+      (filterAttrs (n: v: (v.env-file or false) != false))
+      # Make env-files available under env-files/servicename in services-dir
+      (mapAttrs' (
+        serviceName: serviceValue: {
+          name = "env-files/${serviceName}.env";
+          value.content = serviceValue.env-file.text;
+        }
+      ))
+    ];
+
     services-dir = pkgs.writeMultipleFiles {
       name = "services-dir";
       files = (
-        # Intermediate steps for going from Nix options into dinit configuration derivation
-        lib.pipe config.internal.final [
-          # Set content to dinit style key = value format
-          (lib.mapAttrs (
-            n: v: {
-              content = toDinitService v;
-            }
-          ))
-        ]
-        # Intermediate steps for going from Nix options into dinit configuration derivation
+        # Service files
+        (lib.mapAttrs (n: v: {
+          content = toDinitService v;
+        }) config.internal.final)
+        # Dependency files
         // config.internal.deps
+        # Env files
+        // config.internal.env-files
       );
+      # Config verification
       extraCommands = # bash
         ''
           ${lib.getExe' config.package "dinitcheck"} ${lib.optionalString config.env-file.enable "--env-file ${config.env-file.file}"} --services-dir $out
