@@ -40,7 +40,7 @@ in
   config = {
     env-file = {
       variables = {
-        "DINITENV" = "DINITENV";
+        "DINITENV" = "DINITENV123";
       };
     };
     services.boot = {
@@ -49,13 +49,20 @@ in
     };
     services.nginx = {
       type = "process";
-      command = "${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr";
+      command =
+        pkgs.writeExeclineBin "nginx-launcher" # execline
+          ''
+            importas -S NGINXENV
+            importas -S DINITENV
+            foreground { echo $NGINXENV $DINITENV }
+            ${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr
+          '';
       restart = true;
       options = [ "shares-console" ];
       include-opt = "/doesnt/exist";
       env-file = {
         variables = {
-          "NGINXENV" = "NGINXENV";
+          "NGINXENV" = "NGINXENV123";
         };
       };
     };

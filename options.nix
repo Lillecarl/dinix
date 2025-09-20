@@ -102,10 +102,12 @@ let
           default = "process";
         };
         command = mkDinitOption {
-          type = types.nullOr types.str;
+          type = types.nullOr (types.either types.str types.package);
+          apply = (x: (if isDerivation x then getExe x else x));
         };
         stop-command = mkDinitOption {
-          type = types.nullOr types.str;
+          type = types.nullOr (types.either types.str types.package);
+          apply = (x: (if isDerivation x then getExe x else x));
         };
         working-dir = mkDinitOption {
           type = types.nullOr types.path;
