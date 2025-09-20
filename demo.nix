@@ -22,7 +22,7 @@ let
       ''
         daemon off;
         pid /tmp/nginx.pid;
-        error_log /dev/stderr;
+        error_log /dev/stderr info;
         events {}
         http {
             access_log /dev/stdout;
