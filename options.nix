@@ -331,7 +331,11 @@ in
     # return a nameValuePair.
     mapServicesOptions =
       function: services:
-      (lib.mapAttrs (serviceName: serviceValue: lib.mapAttrs' function serviceValue) services);
+      (lib.mapAttrs (
+        serviceName: # fmt
+        serviceValue:
+        lib.mapAttrs' function serviceValue
+      ) services);
 
     # Converts a Nix dinit spec to a dinit "KV" spec
     toDinitService =

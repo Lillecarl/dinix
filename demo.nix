@@ -35,8 +35,26 @@ let
             }
         }
       '';
+
+  generatedServiceCount = 10;
 in
 {
+  imports = [
+    # Module that generates N minimal services for testing
+    (
+      { lib, ... }:
+      {
+        config.services = lib.listToAttrs (
+          lib.genList (i: {
+            name = toString i;
+            value = {
+              type = "internal";
+            };
+          }) generatedServiceCount
+        );
+      }
+    )
+  ];
   config = {
     env-file = {
       variables = {
@@ -45,7 +63,7 @@ in
     };
     services.boot = {
       type = "internal";
-      depends-on-d = [ "nginx" ];
+      depends-on-d = [ "nginx" ] ++ lib.genList toString generatedServiceCount;
     };
     services.nginx = {
       type = "process";
