@@ -24,7 +24,7 @@ let
 
   # Environment configuration type.
   envfileType = types.submodule (
-    { name, config, ... }:
+    { config, ... }:
     {
       options = {
         enable = mkOption {
@@ -327,14 +327,6 @@ in
       "include-opt" = "@include-opt";
     };
 
-    # Check if option has the -d suffix, is a directory option
-    isDirOpt =
-      optionName:
-      lib.any (x: lib.hasSuffix x optionName) [
-        "-d"
-        ".d"
-      ];
-
     # Apply mapAttrs' (prime) to all options of all services. "function" must
     # return a nameValuePair.
     mapServicesOptions =
@@ -385,7 +377,8 @@ in
       (lib.mapAttrs (
         serviceName: serviceValue:
         lib.mapAttrs (
-          optionName: optionValue: if isDirOpt optionName then "${serviceName}-${optionName}" else optionValue
+          optionName: optionValue:
+          if hasSuffix ".d" optionName then "${serviceName}-${optionName}" else optionValue
         ) serviceValue
       ))
       # Convert env-file attrs to file path
