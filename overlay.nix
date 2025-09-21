@@ -1,6 +1,6 @@
 _: pkgs:
 let
-  lib = pkgs.lib;
+  inherit (pkgs) lib;
 in
 {
   # Derivation that writes multiple files

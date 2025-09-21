@@ -66,11 +66,11 @@ let
       config = {
         # Set enable if anything isn't it's default value
         enable = lib.mkDefault (
-          config.clear == true || config.variables != { } || config.unset != [ ] || config.import != [ ]
+          config.clear || config.variables != { } || config.unset != [ ] || config.import != [ ]
         );
         text = ''
           # dinit environment file. See DINIT(8)
-          ${lib.optionalString (config.clear) "!clear"}
+          ${lib.optionalString config.clear "!clear"}
           ${lib.concatLines (lib.map (x: "!unset ${x}") config.unset)}
           ${lib.generators.toKeyValue {
             mkKeyValue = lib.generators.mkKeyValueDefault { } "=";
@@ -103,11 +103,11 @@ let
         };
         command = mkDinitOption {
           type = types.nullOr (types.either types.str types.package);
-          apply = (x: (if isDerivation x then getExe x else x));
+          apply = x: (if isDerivation x then getExe x else x);
         };
         stop-command = mkDinitOption {
           type = types.nullOr (types.either types.str types.package);
-          apply = (x: (if isDerivation x then getExe x else x));
+          apply = x: (if isDerivation x then getExe x else x);
         };
         working-dir = mkDinitOption {
           type = types.nullOr types.path;
@@ -430,7 +430,7 @@ in
 
     envFiles = lib.pipe cleanedServices [
       # Only if service has env-file option set
-      (filterAttrs (n: v: (v.env-file or false) != false))
+      (filterAttrs (n: v: (v.env-file or false)))
       # Make env-files available under env-files/servicename in services-dir
       (mapAttrs' (
         serviceName: serviceValue: {
@@ -443,14 +443,11 @@ in
     # Write service files and friends to disk
     services-dir = pkgs.writeMultipleFiles {
       name = "services-dir";
-      files = (
-        # Service files
-        serviceFiles
+      files = serviceFiles
         # Dependency files
         // config.internal.depsFiles
         # Env files
-        // config.internal.envFiles
-      );
+        // config.internal.envFiles;
       # Config verification
       extraCommands = # bash
         ''

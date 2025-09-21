@@ -4,7 +4,7 @@
 }:
 let
   pkgs' = pkgs.extend (import ./overlay.nix);
-  lib = pkgs'.lib;
+  inherit (pkgs') lib;
 
   eval = lib.evalModules {
     modules = [
