@@ -399,7 +399,7 @@ in
     # Convert mangled service descriptions into files
     serviceFiles = lib.mapAttrs (n: v: {
       content = toDinitService v;
-    }) config.internal.finalServices;
+    }) finalServices;
 
     # extract .d options into attrset
     depsFiles = lib.foldlAttrs (
@@ -436,11 +436,13 @@ in
     # Write service files and friends to disk
     services-dir = pkgs.writeMultipleFiles {
       name = "services-dir";
-      files = serviceFiles
+      files =
+        # Service definitions
+        serviceFiles
         # Dependency files
-        // config.internal.depsFiles
+        // depsFiles
         # Env files
-        // config.internal.envFiles;
+        // envFiles;
       # Config verification
       extraCommands = # bash
         ''
