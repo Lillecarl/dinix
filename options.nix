@@ -303,7 +303,7 @@ in
   };
 
   options.internal = mkOption {
-    type = types.attrs;
+    type = types.anything;
     description = ''
       Here you can find various intermediate representations for mangling
       options into a derivation containing a complete dinit configuration
@@ -401,7 +401,9 @@ in
       content = toDinitService v;
     }) finalServices;
 
-    # extract .d options into attrset
+    # Extract .d options into files in folders so we can bundle them as
+    # dependency lists in the services-dir.
+    # AI generated black magic.
     depsFiles = lib.foldlAttrs (
       acc: serviceName: service:
       lib.foldlAttrs (
@@ -421,6 +423,7 @@ in
       ) acc service
     ) { } cleanedServices;
 
+    # Get environment files from services so we can bundle them in services-dir
     envFiles = lib.pipe cleanedServices [
       # Only if service has env-file option set
       (filterAttrs (n: v: (v.env-file.enable or false)))
@@ -446,16 +449,17 @@ in
       # Config verification
       extraCommands = # bash
         ''
-          ${lib.getExe' config.package "dinitcheck"} ${lib.optionalString config.env-file.enable "--env-file ${config.env-file.file}"} --services-dir $out
+          ${lib.getExe' config.package "dinitcheck"} ${env-fileArg} --services-dir $out
         '';
     };
 
+    env-fileArg = if config.env-file.enable then "--env-file ${config.env-file.file}" else "";
   };
 
   config.dinitLauncher =
     pkgs.writeExeclineBin "dinitLauncher" # execline
       ''
         elgetpositionals
-        ${lib.getExe' pkgs.dinit "dinit"} ${lib.optionalString config.env-file.enable "--env-file ${config.env-file.file}"} --services-dir ${config.internal.services-dir} $@
+        ${lib.getExe' pkgs.dinit "dinit"} ${config.internal.env-fileArg} --services-dir ${config.internal.services-dir} $@
       '';
 }
