@@ -423,7 +423,7 @@ in
 
     envFiles = lib.pipe cleanedServices [
       # Only if service has env-file option set
-      (filterAttrs (n: v: (v.env-file or false)))
+      (filterAttrs (n: v: (v.env-file.enable or false)))
       # Make env-files available under env-files/servicename in services-dir
       (mapAttrs' (
         serviceName: serviceValue: {
