@@ -280,6 +280,12 @@ let
   );
 in
 {
+  options.name = mkOption {
+    type = types.str;
+    default = "dinixLauncher";
+    description = "What to call the dinix launcher script";
+  };
+
   options.services = mkOption {
     type = types.attrsOf serviceType;
     default = { };
@@ -461,7 +467,7 @@ in
   };
 
   config.dinitLauncher =
-    pkgs.writeExeclineBin "dinitLauncher" # execline
+    pkgs.writeExeclineBin config.name # execline
       ''
         elgetpositionals
         ${lib.getExe' pkgs.dinit "dinit"} ${config.internal.env-fileArg} --services-dir ${config.internal.services-dir} $@
