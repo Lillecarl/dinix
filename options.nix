@@ -482,6 +482,7 @@ in
     pkgs.writeExeclineBin config.name # execline
       ''
         elgetpositionals
+        foreground { mkdir -p /run }
         ${lib.getExe config.dinitLauncher} --container $@
       '';
 }
