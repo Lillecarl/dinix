@@ -301,10 +301,15 @@ in
   options.env-file = mkOption {
     type = types.either types.path envfileType;
     default = { };
+    description = "dinit env-file, can be null, path or envfileType";
   };
 
   options.dinitLauncher = mkOption {
     description = "dinit execline launcher script";
+    type = types.package;
+  };
+  options.containerLauncher = mkOption {
+    description = "dinit execline container launcher script";
     type = types.package;
   };
 
@@ -471,5 +476,12 @@ in
       ''
         elgetpositionals
         ${lib.getExe' pkgs.dinit "dinit"} ${config.internal.env-fileArg} --services-dir ${config.internal.services-dir} $@
+      '';
+
+  config.containerLauncher =
+    pkgs.writeExeclineBin config.name # execline
+      ''
+        elgetpositionals
+        ${lib.getExe config.dinitLauncher} --container $@
       '';
 }
