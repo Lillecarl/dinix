@@ -63,7 +63,7 @@ in
     };
     services.boot = {
       type = "internal";
-      depends-on-d = [ "nginx" ] ++ lib.genList toString generatedServiceCount;
+      depends-on = [ "nginx" ] ++ lib.genList toString generatedServiceCount;
     };
     services.nginx = {
       type = "process";
@@ -77,7 +77,7 @@ in
           '';
       restart = true;
       options = [ "shares-console" ];
-      include-opt = "/doesnt/exist";
+      "@include-opt" = "/doesnt/exist";
       env-file = {
         variables = {
           "NGINXENV" = "NGINXENV123";

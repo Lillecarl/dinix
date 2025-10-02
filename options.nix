@@ -19,8 +19,17 @@ let
       // attrs
     );
 
-  # Module option apply function used to convert lists to space separated strings
-  nullOrListApply = x: if lib.typeOf x == "list" then lib.concatStringsSep " " x else x;
+  dinixStringLikePlusType = mkOptionType {
+    name = "stringLikePlus";
+    description = "Something stringlike + numbers";
+    descriptionClass = "noun";
+    check = isStringLikePlus;
+    merge = mergeEqualOption;
+  };
+  dinixListType = types.nullOr (types.listOf dinixStringLikePlusType);
+
+  isStringLikePlus = value: !isList value && strings.isConvertibleWithToString value;
+  toStringPlus = value: if isBool value then boolToString value else toString value;
 
   # Environment configuration type.
   envfileType = types.submodule (
@@ -65,17 +74,17 @@ let
       };
       config = {
         # Set enable if anything isn't it's default value
-        enable = lib.mkDefault (
+        enable = mkDefault (
           config.clear || config.variables != { } || config.unset != [ ] || config.import != [ ]
         );
         text = ''
           # dinit environment file. See DINIT(8)
-          ${lib.optionalString config.clear "!clear"}
-          ${lib.concatLines (lib.map (x: "!unset ${x}") config.unset)}
-          ${lib.generators.toKeyValue {
-            mkKeyValue = lib.generators.mkKeyValueDefault { } "=";
+          ${optionalString config.clear "!clear"}
+          ${concatLines (map (x: "!unset ${x}") config.unset)}
+          ${generators.toKeyValue {
+            mkKeyValue = generators.mkKeyValueDefault { } "=";
           } config.variables}
-          ${lib.concatLines (lib.map (x: "!import ${x}") config.import)}
+          ${concatLines (map (x: "!import ${x}") config.import)}
         '';
         file = pkgs.writeText "env-file" config.text;
       };
@@ -83,22 +92,14 @@ let
   );
 
   serviceType = types.submodule (
-    { name, ... }:
+    { config, ... }:
     {
-      freeformType = types.attrsOf types.str;
+      # This covers all all options from the dinit-service manpage
+      freeformType = types.attrsOf (types.either dinixListType dinixStringLikePlusType);
+      # Some types get special treatment
       options = {
-        name = mkOption {
-          default = name;
-          internal = true;
-        };
         type = mkDinitOption {
-          type = types.enum [
-            "process"
-            "bgprocess"
-            "scripted"
-            "internal"
-            "triggered"
-          ];
+          type = types.str;
           default = "process";
         };
         command = mkDinitOption {
@@ -109,173 +110,40 @@ let
           type = types.nullOr (types.either types.str types.package);
           apply = x: (if isDerivation x then getExe x else x);
         };
-        working-dir = mkDinitOption {
-          type = types.nullOr types.path;
-        };
-        run-as = mkDinitOption {
-          type = types.nullOr (types.either types.str types.int);
-        };
         env-file = mkDinitOption {
           type = types.nullOr (types.either types.path envfileType);
+          apply = (value: if value.enable or false then value.file else value);
         };
-        restart = mkDinitOption {
-          type = types.nullOr (types.either (types.enum [ "on-failure" ]) types.bool);
+        text = mkDinitOption {
+          type = types.str;
+          internal = true;
         };
-        smooth-recovery = mkDinitOption {
-          type = types.nullOr types.bool;
-        };
-        restart-delay = mkDinitOption {
-          type = types.nullOr types.number;
-        };
-        restart-limit-interval = mkDinitOption {
-          type = types.nullOr types.number;
-        };
-        restart-limit-count = mkDinitOption {
-          type = types.nullOr types.int;
-        };
-        start-timeout = mkDinitOption {
-          type = types.nullOr types.number;
-        };
-        stop-timeout = mkDinitOption {
-          type = types.nullOr types.number;
-        };
-        pid-file = mkDinitOption {
-          type = types.nullOr types.path;
-        };
-        depends-on = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        depends-ms = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        waits-for = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        depends-on-d = mkDinitOption {
-          type = types.nullOr (types.listOf types.str);
-        };
-        depends-ms-d = mkDinitOption {
-          type = types.nullOr (types.listOf types.str);
-        };
-        waits-for-d = mkDinitOption {
-          type = types.nullOr (types.listOf types.str);
-        };
-        after = mkDinitOption {
-          type = types.nullOr (types.listOf types.str);
-          apply = nullOrListApply;
-        };
-        before = mkDinitOption {
-          type = types.nullOr (types.listOf types.str);
-          apply = nullOrListApply;
-        };
-        chain-to = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        socket-listen = mkDinitOption {
-          type = types.nullOr types.path;
-        };
-        socket-permissions = mkDinitOption {
-          type = types.nullOr lib.types.int;
-        };
-        socket-uid = mkDinitOption {
-          type = types.nullOr (types.either types.str types.int);
-        };
-        socket-gid = mkDinitOption {
-          type = types.nullOr (types.either types.str types.int);
-        };
-        term-signal = mkDinitOption {
-          type = types.nullOr (
-            types.enum [
-              "HUP"
-              "INT"
-              "QUIT"
-              "KILL"
-              "USR1"
-              "USR2"
-              "TERM"
-              "CONT"
-              "STOP"
-            ]
-          );
-        };
-        ready-notification = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        log-type = mkDinitOption {
-          type = types.nullOr (
-            types.enum [
-              "file"
-              "buffer"
-              "pipe"
-              "none"
-            ]
-          );
-        };
-        logfile = mkDinitOption {
-          type = types.nullOr types.path;
-        };
-        logfile-permissions = mkDinitOption {
-          type = types.nullOr lib.types.int;
-        };
-        logfile-uid = mkDinitOption {
-          type = types.nullOr (types.either types.str types.int);
-        };
-        logfile-gid = mkDinitOption {
-          type = types.nullOr (types.either types.str types.int);
-        };
-        log-buffer-size = mkDinitOption {
-          type = types.nullOr lib.types.int;
-        };
-        consumer-of = mkDinitOption {
-          type = types.nullOr types.str;
-        };
-        options = mkDinitOption {
-          type = types.nullOr (
-            types.listOf (
-              types.enum [
-                "runs-on-console"
-                "starts-on-console"
-                "shares-console"
-                "unmask-intr"
-                "starts-rwfs"
-                "starts-log"
-                "pass-cs-fd"
-                "start-interruptible"
-                "skippable"
-                "signal-process-only"
-                "always-chain"
-                "kill-all-on-stop"
-              ]
-            )
-          );
-          apply = nullOrListApply;
-        };
-        load-options = mkDinitOption {
-          type = types.nullOr (
-            types.listOf (
-              types.enum [
-                "export-passwd-vars"
-                "export-service-name"
-              ]
-            )
-          );
-          apply = nullOrListApply;
-        };
-        include = mkDinitOption {
-          type = types.nullOr types.path;
-        };
-        include-opt = mkDinitOption {
-          type = types.nullOr types.path;
-        };
-        # dinit options we won't implement:
-        # * inittab-id
-        # * inittab-line
-        # * rlimit-nofile
-        # * rlimit-core
-        # * rlimit-data
-        # * rlimit-addrspace
-        # * run-in-cgroup
       };
+      config =
+        let
+          options = pipe config [
+            attrsToList
+            (filter (opt: opt.name != "text" && opt.value != null)) # Don't process text recursively
+          ];
+          toKV =
+            name: value:
+            if hasPrefix "@" name then "${name} ${toStringPlus value}" else "${name} = ${toStringPlus value}";
+        in
+        {
+          text = concatLines (
+            # Make lines of all "string-like" options
+            (pipe options [
+              (filter (opt: isStringLikePlus opt.value))
+              (map (opt: toKV opt.name opt.value))
+            ])
+            # Make lines of all list options
+            ++ (pipe options [
+              (filter (opt: isList opt.value))
+              (map (opt: map (listVal: "${opt.name}: ${toStringPlus listVal}") opt.value))
+              flatten
+            ])
+          );
+        };
     }
   );
 in
@@ -284,6 +152,12 @@ in
     type = types.str;
     default = "dinixLauncher";
     description = "What to call the dinix launcher script";
+  };
+
+  options.verifyConfig = mkOption {
+    type = types.bool;
+    default = true;
+    description = "Whether to call dinitcheck before passing build";
   };
 
   options.services = mkOption {
@@ -299,9 +173,9 @@ in
   };
 
   options.env-file = mkOption {
-    type = types.either types.path envfileType;
-    default = { };
+    type = types.nullOr (types.either types.path envfileType);
     description = "dinit env-file, can be null, path or envfileType";
+    apply = (value: if value.enable or false then value.file else value);
   };
 
   options.dinitLauncher = mkOption {
@@ -324,158 +198,30 @@ in
   };
 
   # Make boot service internal by default
-  config.services.boot.type = lib.mkDefault "internal";
+  config.services.boot.type = mkDefault "internal";
 
   # Intermediate steps for going from Nix options into dinit configuration derivation
   config.internal = rec {
-    # Set of options to rename from their easily typed Nix names
-    # into their corresponding dinit names
-    renameOpts = {
-      "depends-on-d" = "depends-on.d";
-      "depends-ms-d" = "depends-ms.d";
-      "waits-for-d" = "waits-for.d";
-      "include" = "@include";
-      "include-opt" = "@include-opt";
-    };
-
-    # Apply mapAttrs' (prime) to all options of all services. "function" must
-    # return a nameValuePair.
-    mapServicesOptions =
-      function: services:
-      (lib.mapAttrs (
-        serviceName: # fmt
-        serviceValue:
-        lib.mapAttrs' function serviceValue
-      ) services);
-
-    # Converts a Nix dinit spec to a dinit "KV" spec
-    toDinitService =
-      attrs:
-      let
-        kvAttrs = lib.filterAttrs (n: v: !lib.hasPrefix "@" n && lib.typeOf != "list") attrs;
-        metaAttrs = lib.filterAttrs (n: v: lib.hasPrefix "@" n) attrs;
-
-        keyValueStr = lib.generators.toKeyValue {
-          mkKeyValue = lib.generators.mkKeyValueDefault { } " = ";
-        } kvAttrs;
-
-        metaValueStr = lib.generators.toKeyValue {
-          mkKeyValue = lib.generators.mkKeyValueDefault { } " ";
-        } metaAttrs;
-
-      in
-      # dinit
-      ''
-        # dinit service configuration see dinit-service(5)
-
-        # Nix rendered configuration:
-        ${keyValueStr}
-        # Optional includes for overrides or other shenanigans:
-        ${metaValueStr}
-      '';
-
-    # Rename option names and remove null option values
-    cleanedServices = lib.pipe config.services [
-      # Remove all null options
-      (lib.filterAttrsRecursive (n: v: v != null))
-      # Rename options from nix-friendly names/keys to dinit keys
-      (mapServicesOptions (
-        optionName: optionValue: {
-          name = if lib.hasAttr optionName renameOpts then renameOpts.${optionName} else optionName;
-          value = optionValue;
-        }
-      ))
-    ];
-
-    finalServices = lib.pipe cleanedServices [
-      # Convert diropt into directory path
-      (lib.mapAttrs (
-        serviceName: serviceValue:
-        lib.mapAttrs (
-          optionName: optionValue:
-          if hasSuffix ".d" optionName then "${serviceName}-${optionName}" else optionValue
-        ) serviceValue
-      ))
-      # Convert env-file attrs to file path
-      (lib.mapAttrs (
-        serviceName: serviceValue:
-        lib.mapAttrs (
-          optionName: optionValue:
-          if optionName == "env-file" then "env-files/${serviceName}.env" else optionValue
-        ) serviceValue
-      ))
-      # Remove name option since it's only internal
-      (lib.mapAttrs (
-        serviceName: serviceValue:
-        lib.filterAttrs (optionName: optionValue: optionName != "name") serviceValue
-      ))
-    ];
-
-    # Convert mangled service descriptions into files
-    serviceFiles = lib.mapAttrs (n: v: {
-      content = toDinitService v;
-    }) finalServices;
-
-    # Extract .d options into files in folders so we can bundle them as
-    # dependency lists in the services-dir.
-    # AI generated black magic.
-    depsFiles = lib.foldlAttrs (
-      acc: serviceName: service:
-      lib.foldlAttrs (
-        acc': attrName: deps:
-        if lib.hasSuffix ".d" attrName then
-          acc'
-          // lib.listToAttrs (
-            map (dep: {
-              name = "${serviceName}-${attrName}/${dep}";
-              value = {
-                content = "";
-              };
-            }) deps
-          )
-        else
-          acc'
-      ) acc service
-    ) { } cleanedServices;
-
-    # Get environment files from services so we can bundle them in services-dir
-    envFiles = lib.pipe cleanedServices [
-      # Only if service has env-file option set
-      (filterAttrs (n: v: (v.env-file.enable or false)))
-      # Make env-files available under env-files/servicename in services-dir
-      (mapAttrs' (
-        serviceName: serviceValue: {
-          name = "env-files/${serviceName}.env";
-          value.content = serviceValue.env-file.text;
-        }
-      ))
-    ];
-
     # Write service files and friends to disk
     services-dir = pkgs.writeMultipleFiles {
       name = "services-dir";
-      files =
-        # Service definitions
-        serviceFiles
-        # Dependency files
-        // depsFiles
-        # Env files
-        // envFiles;
+      files = mapAttrs (serviceName: serviceValue: { content = serviceValue.text; }) config.services;
       # Config verification
-      extraCommands = # bash
-        ''
-          ${lib.getExe' config.package "dinitcheck"} ${env-fileArg} --services-dir $out
-        '';
+      extraCommands =
+        optionalString config.verifyConfig # bash
+          ''
+            ${getExe' config.package "dinitcheck"} ${env-fileArg} --services-dir $out
+          '';
     };
 
-    env-fileArg = if config.env-file.enable then "--env-file ${config.env-file.file}" else "";
+    env-fileArg = if config.env-file or null != null then "--env-file ${config.env-file}" else "";
   };
 
   config.dinitLauncher =
     pkgs.writeExeclineBin config.name # execline
       ''
         elgetpositionals
-        ${lib.getExe' pkgs.dinit "dinit"} ${config.internal.env-fileArg} --services-dir ${config.internal.services-dir} $@
+        ${getExe' pkgs.dinit "dinit"} ${config.internal.env-fileArg} --services-dir ${config.internal.services-dir} $@
       '';
 
   config.containerLauncher =
@@ -483,6 +229,6 @@ in
       ''
         elgetpositionals
         foreground { mkdir -p /run }
-        ${lib.getExe config.dinitLauncher} --container $@
+        ${getExe config.dinitLauncher} --container $@
       '';
 }
