@@ -167,10 +167,29 @@ in
     description = "dinit services configuration, see dinit-service(5)";
   };
 
-  options.package = mkOption {
-    type = types.package;
-    default = pkgs.dinit;
-  };
+  options.package =
+    let
+      util-linuxMiniMinimal = pkgs.util-linuxMinimal.override {
+        capabilitiesSupport = false;
+        cryptsetup = null;
+        cryptsetupSupport = false;
+        ncurses = null;
+        ncursesSupport = false;
+        nlsSupport = false;
+        pamSupport = false;
+        shadow = null;
+        shadowSupport = false;
+        systemd = null;
+        systemdSupport = false;
+        translateManpages = false;
+        withLastlog = false;
+        writeSupport = false;
+      };
+    in
+    mkOption {
+      type = types.package;
+      default = pkgs.dinit.override { util-linux = util-linuxMiniMinimal; };
+    };
 
   options.env-file = mkOption {
     type = types.nullOr (types.either types.path envfileType);
