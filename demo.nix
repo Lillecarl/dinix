@@ -76,7 +76,10 @@ in
             ${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr
           '';
       restart = true;
-      options = [ "shares-console" ];
+      options = [
+        "shares-console"
+        "pass-cs-fd"
+      ];
       "@include-opt" = "/doesnt/exist";
       env-file = {
         variables = {
