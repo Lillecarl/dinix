@@ -13,6 +13,7 @@ let
     attrs:
     mkOption (
       {
+        type = dinixStringlikePlusType;
         description = "See DINIT-SERVICE(5)";
         default = null;
       }
@@ -95,19 +96,18 @@ let
     { config, ... }:
     {
       # This covers all all options from the dinit-service manpage
+      # If not immidiately obvious from their docs: Options documented as ending
+      # with a colon (depends-on: for example) should be nix lists.
       freeformType = types.attrsOf (types.either dinixListType dinixStringLikePlusType);
       # Some types get special treatment
       options = {
         type = mkDinitOption {
-          type = types.str;
           default = "process";
         };
         command = mkDinitOption {
-          type = types.nullOr (types.either types.str types.package);
           apply = x: (if isDerivation x then getExe x else x);
         };
         stop-command = mkDinitOption {
-          type = types.nullOr (types.either types.str types.package);
           apply = x: (if isDerivation x then getExe x else x);
         };
         env-file = mkDinitOption {
