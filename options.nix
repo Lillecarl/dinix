@@ -13,7 +13,7 @@ let
     attrs:
     mkOption (
       {
-        type = dinixStringlikePlusType;
+        type = dinixStringLikePlusType;
         description = "See DINIT-SERVICE(5)";
         default = null;
       }
@@ -29,7 +29,8 @@ let
   };
   dinixListType = types.nullOr (types.listOf dinixStringLikePlusType);
 
-  isStringLikePlus = value: !isList value && strings.isConvertibleWithToString value;
+  isStringLikePlus =
+    value: value == null || (!isList value && strings.isConvertibleWithToString value);
   toStringPlus = value: if isBool value then boolToString value else toString value;
 
   # Environment configuration type.
@@ -163,19 +164,18 @@ in
   options.services = mkOption {
     type = types.attrsOf serviceType;
     default = { };
-    description = "dinit services configuration";
+    description = "dinit services configuration, see dinit-service(5)";
   };
 
   options.package = mkOption {
     type = types.package;
     default = pkgs.dinit;
-    description = "dinit package to use";
   };
 
   options.env-file = mkOption {
     type = types.nullOr (types.either types.path envfileType);
-    description = "dinit env-file, can be null, path or envfileType";
     apply = (value: if value.enable or false then value.file else value);
+    default = null;
   };
 
   options.dinitLauncher = mkOption {
@@ -210,18 +210,18 @@ in
       extraCommands =
         optionalString config.verifyConfig # bash
           ''
-            ${getExe' config.package "dinitcheck"} ${env-fileArg} --services-dir $out
+            ${getExe' config.package "dinitcheck"} ${envfileArg} --services-dir $out
           '';
     };
 
-    env-fileArg = if config.env-file or null != null then "--env-file ${config.env-file}" else "";
+    envfileArg = if config.env-file != null then "--env-file ${config.env-file}" else "";
   };
 
   config.dinitLauncher =
     pkgs.writeExeclineBin config.name # execline
       ''
         elgetpositionals
-        ${getExe' pkgs.dinit "dinit"} ${config.internal.env-fileArg} --services-dir ${config.internal.services-dir} $@
+        ${getExe' pkgs.dinit "dinit"} ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} $@
       '';
 
   config.containerLauncher =
