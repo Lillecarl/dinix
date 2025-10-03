@@ -167,29 +167,10 @@ in
     description = "dinit services configuration, see dinit-service(5)";
   };
 
-  options.package =
-    let
-      util-linuxMiniMinimal = pkgs.util-linuxMinimal.override {
-        capabilitiesSupport = false;
-        cryptsetup = null;
-        cryptsetupSupport = false;
-        ncurses = null;
-        ncursesSupport = false;
-        nlsSupport = false;
-        pamSupport = false;
-        shadow = null;
-        shadowSupport = false;
-        systemd = null;
-        systemdSupport = false;
-        translateManpages = false;
-        withLastlog = false;
-        writeSupport = false;
-      };
-    in
-    mkOption {
-      type = types.package;
-      default = pkgs.dinit.override { util-linux = util-linuxMiniMinimal; };
-    };
+  options.package = mkOption {
+    type = types.package;
+    default = pkgs.dinit.override { util-linux = pkgs.util-linuxMinimal; };
+  };
 
   options.env-file = mkOption {
     type = types.nullOr (types.either types.path envfileType);
@@ -240,7 +221,7 @@ in
     pkgs.writeExeclineBin config.name # execline
       ''
         elgetpositionals
-        ${getExe' pkgs.dinit "dinit"} ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} $@
+        ${getExe' config.package "dinit"} ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} $@
       '';
 
   config.containerLauncher =
