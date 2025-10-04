@@ -228,7 +228,7 @@ in
     pkgs.writeExeclineBin config.name # execline
       ''
         elgetpositionals
-        foreground { mkdir -p /run }
+        foreground { mkdir --parents /run }
         foreground { ln --symbolic --force ${config.internal.services-dir} /run/services }
         exec ${getExe' config.package "dinit"} ${config.internal.envfileArg} --services-dir /run/services --container $@
       '';
