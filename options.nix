@@ -113,7 +113,7 @@ let
         };
         env-file = mkDinitOption {
           type = types.nullOr (types.either types.path envfileType);
-          apply = (value: if value.enable or false then value.file else value);
+          apply = value: if value.enable or false then value.file else value;
         };
         text = mkDinitOption {
           type = types.str;
@@ -174,7 +174,7 @@ in
 
   options.env-file = mkOption {
     type = types.nullOr (types.either types.path envfileType);
-    apply = (value: if value.enable or false then value.file else value);
+    apply = value: if value.enable or false then value.file else value;
     default = null;
   };
 
