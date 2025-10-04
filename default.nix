@@ -4,7 +4,10 @@
 }:
 let
   pkgs' = pkgs.extend (import ./overlay.nix);
-  inherit (pkgs') lib;
+in
+let
+  pkgs = pkgs';
+  inherit (pkgs) lib;
 
   eval = lib.evalModules {
     modules = [
@@ -12,11 +15,12 @@ let
     ]
     ++ modules;
 
-    specialArgs = { pkgs = pkgs'; };
+    specialArgs = {
+      inherit pkgs;
+    };
   };
 in
 {
-  pkgs = pkgs';
-  inherit lib eval;
+  inherit pkgs lib eval;
   inherit (eval) options config;
 }
