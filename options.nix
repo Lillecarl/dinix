@@ -221,7 +221,7 @@ in
     pkgs.writeExeclineBin config.name # execline
       ''
         elgetpositionals
-        ${getExe' config.package "dinit"} ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} $@
+        exec ${getExe' config.package "dinit"} ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} $@
       '';
 
   config.containerLauncher =
@@ -229,6 +229,7 @@ in
       ''
         elgetpositionals
         foreground { mkdir -p /run }
-        ${getExe config.dinitLauncher} --container $@
+        foreground { ln --symbolic --force ${config.internal.services-dir} /run/services }
+        exec ${getExe' config.package "dinit"} ${config.internal.envfileArg} --services-dir /run/services --container $@
       '';
 }
