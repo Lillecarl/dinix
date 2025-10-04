@@ -63,7 +63,7 @@ in
     };
     services.boot = {
       type = "internal";
-      depends-on = [ "nginx" ] ++ lib.genList toString generatedServiceCount;
+      depends-on = [ "nginx" ] ++ lib.genList toString (builtins.floor (generatedServiceCount / 2));
     };
     services.nginx = {
       type = "process";
@@ -80,7 +80,17 @@ in
         "shares-console"
         "pass-cs-fd"
       ];
+      "@include" =
+        pkgs.writeText "includeTest" # dinit
+          ''
+            depends-on: ${toString (generatedServiceCount - 1)}
+          '';
       "@include-opt" = "/doesnt/exist";
+      "depends-on.d" = pkgs.writeTextFile {
+        name = "nginxdeps";
+        destination = "/${toString (generatedServiceCount - 2)}";
+        text = "";
+      };
       env-file = {
         variables = {
           "NGINXENV" = "NGINXENV123";
