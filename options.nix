@@ -178,12 +178,10 @@ in
     default = null;
   };
 
-  options.dinitLauncher = mkOption {
-    description = "dinit execline launcher script";
+  options.userWrapper = mkOption {
     type = types.package;
   };
-  options.containerLauncher = mkOption {
-    description = "dinit execline container launcher script";
+  options.containerWrapper = mkOption {
     type = types.package;
   };
 
@@ -217,19 +215,36 @@ in
     envfileArg = if config.env-file != null then "--env-file ${config.env-file}" else "";
   };
 
-  config.dinitLauncher =
-    pkgs.writeExeclineBin config.name # execline
+  config.userWrapper = pkgs.stdenv.mkDerivation {
+    name = "dinit-wrapped";
+    src = pkgs.dinit;
+    nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+    installPhase = # bash
       ''
-        elgetpositionals
-        exec ${getExe' config.package "dinit"} ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} $@
+        mkdir --parents $out/bin
+        makeBinaryWrapper $src/bin/dinit $out/bin/dinit \
+          --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
+        makeBinaryWrapper $src/bin/dinitcheck $out/bin/dinitcheck \
+          --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
+        makeBinaryWrapper $src/bin/dinitctl $out/bin/dinitctl
+        makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor
       '';
-
-  config.containerLauncher =
-    pkgs.writeExeclineBin config.name # execline
+  };
+  config.containerWrapper = pkgs.stdenv.mkDerivation {
+    name = "dinit-wrapped";
+    src = pkgs.dinit;
+    nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+    installPhase = # bash
       ''
-        elgetpositionals
-        foreground { mkdir --parents /run }
-        foreground { ln --symbolic --force ${config.internal.services-dir} /run/services }
-        exec ${getExe' config.package "dinit"} ${config.internal.envfileArg} --services-dir /run/services --container $@
+        mkdir --parents $out/bin
+        makeBinaryWrapper $src/bin/dinit $out/bin/dinit \
+          --add-flags "--socket-path /dinitctl ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} --container"
+        makeBinaryWrapper $src/bin/dinitcheck $out/bin/dinitcheck \
+          --add-flags "${config.internal.envfileArg} --socket-path /dinitctl --services-dir ${config.internal.services-dir}"
+        makeBinaryWrapper $src/bin/dinitctl $out/bin/dinitctl \
+          --add-flags "--socket-path /dinitctl"
+        makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor \
+          --add-flags "--socket-path /dinitctl"
       '';
+  };
 }
