@@ -170,7 +170,7 @@ in
     };
     package = mkOption {
       type = types.package;
-      default = pkgs.dinit.override { util-linux = pkgs.util-linuxMinimal; };
+      default = pkgs.dinit;
     };
     env-file = mkOption {
       type = types.nullOr (types.either types.path envfileType);
