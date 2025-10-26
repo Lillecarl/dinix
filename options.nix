@@ -246,5 +246,6 @@ in
         makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor \
           --add-flags "--socket-path /dinitctl"
       '';
+    meta.mainProgram = "dinit";
   };
 }
