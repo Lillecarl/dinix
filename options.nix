@@ -149,103 +149,116 @@ let
   );
 in
 {
-  options.name = mkOption {
-    type = types.str;
-    default = "dinixLauncher";
-    description = "What to call the dinix launcher script";
+  imports = [
+    ./users.nix
+  ];
+  options = {
+    name = mkOption {
+      type = types.str;
+      default = "dinixLauncher";
+      description = "What to call the dinix launcher script";
+    };
+    verifyConfig = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Whether to call dinitcheck before passing build";
+    };
+    services = mkOption {
+      type = types.attrsOf serviceType;
+      default = { };
+      description = "dinit services configuration, see dinit-service(5)";
+    };
+    package = mkOption {
+      type = types.package;
+      default = pkgs.dinit.override { util-linux = pkgs.util-linuxMinimal; };
+    };
+    env-file = mkOption {
+      type = types.nullOr (types.either types.path envfileType);
+      apply = value: if value.enable or false then value.file else value;
+      default = null;
+    };
+    userWrapper = mkOption {
+      type = types.package;
+    };
+    containerWrapper = mkOption {
+      type = types.package;
+    };
+    internal = mkOption {
+      type = types.anything;
+      description = ''
+        Here you can find various intermediate representations for mangling
+        options into a derivation containing a complete dinit configuration
+      '';
+      internal = true;
+      default = { };
+    };
   };
 
-  options.verifyConfig = mkOption {
-    type = types.bool;
-    default = true;
-    description = "Whether to call dinitcheck before passing build";
-  };
+  config = {
+    # Make boot service internal by default
+    services.boot.type = mkDefault "internal";
 
-  options.services = mkOption {
-    type = types.attrsOf serviceType;
-    default = { };
-    description = "dinit services configuration, see dinit-service(5)";
-  };
+    # Intermediate steps for going from Nix options into dinit configuration derivation
+    internal = rec {
+      # Write service files and friends to disk
+      services-dir = pkgs.writeMultipleFiles {
+        name = "services-dir";
+        files = mapAttrs (serviceName: serviceValue: { content = serviceValue.text; }) config.services;
+        # Config verification
+        extraCommands =
+          optionalString config.verifyConfig # bash
+            ''
+              ${getExe' config.package "dinitcheck"} ${envfileArg} --services-dir $out
+            '';
+      };
 
-  options.package = mkOption {
-    type = types.package;
-    default = pkgs.dinit.override { util-linux = pkgs.util-linuxMinimal; };
-  };
-
-  options.env-file = mkOption {
-    type = types.nullOr (types.either types.path envfileType);
-    apply = value: if value.enable or false then value.file else value;
-    default = null;
-  };
-
-  options.userWrapper = mkOption {
-    type = types.package;
-  };
-  options.containerWrapper = mkOption {
-    type = types.package;
-  };
-
-  options.internal = mkOption {
-    type = types.anything;
-    description = ''
-      Here you can find various intermediate representations for mangling
-      options into a derivation containing a complete dinit configuration
-    '';
-    internal = true;
-    default = { };
-  };
-
-  # Make boot service internal by default
-  config.services.boot.type = mkDefault "internal";
-
-  # Intermediate steps for going from Nix options into dinit configuration derivation
-  config.internal = rec {
-    # Write service files and friends to disk
-    services-dir = pkgs.writeMultipleFiles {
-      name = "services-dir";
-      files = mapAttrs (serviceName: serviceValue: { content = serviceValue.text; }) config.services;
-      # Config verification
-      extraCommands =
-        optionalString config.verifyConfig # bash
-          ''
-            ${getExe' config.package "dinitcheck"} ${envfileArg} --services-dir $out
-          '';
+      envfileArg = if config.env-file != null then "--env-file ${config.env-file}" else "";
     };
 
-    envfileArg = if config.env-file != null then "--env-file ${config.env-file}" else "";
-  };
+    userWrapper = pkgs.stdenv.mkDerivation {
+      name = "dinit-wrapped";
+      src = pkgs.dinit;
+      nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+      installPhase = # bash
+        ''
+          mkdir --parents $out/bin
+          makeBinaryWrapper $src/bin/dinit $out/bin/dinit \
+            --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
+          makeBinaryWrapper $src/bin/dinitcheck $out/bin/dinitcheck \
+            --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
+          makeBinaryWrapper $src/bin/dinitctl $out/bin/dinitctl
+          makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor
+        '';
+    };
+    containerWrapper = pkgs.buildEnv {
+      name = "containerWrapper";
+      meta.mainProgram = "dinit";
+      paths = [
+        (pkgs.hiPrio (
+          pkgs.writeScriptBin "dinit" # bash
+            ''
+              #! ${pkgs.runtimeShell}
+              set -euo pipefail
+              export PATH=${
+                lib.makeBinPath [
+                  pkgs.coreutils
+                  pkgs.rsync
+                ]
+              }:$PATH
+              mkdir --parents /run/services
+              rsync --archive ${config.internal.services-dir}/ /run/services
 
-  config.userWrapper = pkgs.stdenv.mkDerivation {
-    name = "dinit-wrapped";
-    src = pkgs.dinit;
-    nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
-    installPhase = # bash
-      ''
-        mkdir --parents $out/bin
-        makeBinaryWrapper $src/bin/dinit $out/bin/dinit \
-          --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
-        makeBinaryWrapper $src/bin/dinitcheck $out/bin/dinitcheck \
-          --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
-        makeBinaryWrapper $src/bin/dinitctl $out/bin/dinitctl
-        makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor
-      '';
-  };
-  config.containerWrapper = pkgs.stdenv.mkDerivation {
-    name = "dinit-wrapped";
-    src = pkgs.dinit;
-    nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
-    installPhase = # bash
-      ''
-        mkdir --parents $out/bin
-        makeBinaryWrapper $src/bin/dinit $out/bin/dinit \
-          --add-flags "--socket-path /dinitctl ${config.internal.envfileArg} --services-dir ${config.internal.services-dir} --container"
-        makeBinaryWrapper $src/bin/dinitcheck $out/bin/dinitcheck \
-          --add-flags "${config.internal.envfileArg} --socket-path /dinitctl --services-dir ${config.internal.services-dir}"
-        makeBinaryWrapper $src/bin/dinitctl $out/bin/dinitctl \
-          --add-flags "--socket-path /dinitctl"
-        makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor \
-          --add-flags "--socket-path /dinitctl"
-      '';
-    meta.mainProgram = "dinit";
+              ${lib.optionalString config.users.enable (lib.getExe config.internal.usersInstallScript)}
+
+              exec ${lib.getExe' config.package "dinit"} \
+                ${config.internal.envfileArg} \
+                --services-dir /run/services \
+                --container \
+                "$@"
+            ''
+        ))
+        config.package
+      ];
+    };
   };
 }
