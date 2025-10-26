@@ -61,6 +61,7 @@ in
         "DINITENV" = "DINITENV123";
       };
     };
+    users.enable = true;
     services.boot = {
       type = "internal";
       depends-on = [ "nginx" ] ++ lib.genList toString (builtins.floor (generatedServiceCount / 2));
