@@ -234,7 +234,7 @@ in
       name = "containerWrapper";
       meta.mainProgram = "dinit";
       paths = [
-        (pkgs.hiPrio (
+        (lib.hiPrio (
           pkgs.writeScriptBin "dinit" # bash
             ''
               #! ${pkgs.runtimeShell}
