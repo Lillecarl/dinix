@@ -246,6 +246,7 @@ in
                 ]
               }:$PATH
               mkdir --parents /run/services
+              mkdir --parents /var/log
               rsync --archive ${config.internal.services-dir}/ /run/services
 
               ${lib.optionalString config.users.enable (lib.getExe config.internal.usersInstallScript)}
