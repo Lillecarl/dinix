@@ -217,7 +217,7 @@ in
 
     userWrapper = pkgs.stdenv.mkDerivation {
       name = "dinit-wrapped";
-      src = pkgs.dinit;
+      src = config.package;
       nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
       installPhase = # bash
         ''
