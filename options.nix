@@ -208,7 +208,7 @@ in
         extraCommands =
           optionalString config.verifyConfig # bash
             ''
-              ${getExe' config.package "dinitcheck"} ${envfileArg} --services-dir $out
+              ${getExe' config.package "dinit-check"} ${envfileArg} --services-dir $out
             '';
       };
 
@@ -224,7 +224,7 @@ in
           mkdir --parents $out/bin
           makeBinaryWrapper $src/bin/dinit $out/bin/dinit \
             --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
-          makeBinaryWrapper $src/bin/dinitcheck $out/bin/dinitcheck \
+          makeBinaryWrapper $src/bin/dinit-check $out/bin/dinit-check \
             --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
           makeBinaryWrapper $src/bin/dinitctl $out/bin/dinitctl
           makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor
