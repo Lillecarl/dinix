@@ -199,21 +199,62 @@ in
     services.boot.type = mkDefault "internal";
 
     # Intermediate steps for going from Nix options into dinit configuration derivation
-    internal = rec {
-      # Write service files and friends to disk
-      services-dir = pkgs.writeMultipleFiles {
-        name = "services-dir";
-        files = mapAttrs (serviceName: serviceValue: { content = serviceValue.text; }) config.services;
-        # Config verification
-        extraCommands =
-          optionalString config.verifyConfig # bash
-            ''
-              ${getExe' config.package "dinit-check"} ${envfileArg} --services-dir $out
-            '';
-      };
+    internal =
+      let
+        writeMultipleFiles =
+          {
+            name,
+            files,
+            extraCommands ? "",
+          }:
+          let
+            fileList = lib.mapAttrsToList (path: file: {
+              inherit path;
+              content = file.content or file;
+              mode = if file.executable or false then "755" else file.mode or "644";
+            }) files;
 
-      envfileArg = if config.env-file != null then "--env-file ${config.env-file}" else "";
-    };
+            # Create attribute names for passAsFile
+            passAsFileAttrs = builtins.listToAttrs (
+              lib.imap0 (i: file: {
+                name = "file${toString i}";
+                value = file.content;
+              }) fileList
+            );
+
+            passAsFileNames = builtins.attrNames passAsFileAttrs;
+
+            commands =
+              (lib.imap0 (i: file: ''
+                mkdir -p $out/$(dirname "${file.path}")
+                cp "$file${toString i}Path" $out/${file.path}
+                chmod ${file.mode} $out/${file.path}
+              '') fileList)
+              ++ (lib.toList extraCommands);
+
+          in
+          pkgs.runCommand name (
+            passAsFileAttrs
+            // {
+              passAsFile = passAsFileNames;
+            }
+          ) (builtins.concatStringsSep "\n" commands);
+      in
+      rec {
+        # Write service files and friends to disk
+        services-dir = writeMultipleFiles {
+          name = "services-dir";
+          files = mapAttrs (serviceName: serviceValue: { content = serviceValue.text; }) config.services;
+          # Config verification
+          extraCommands =
+            optionalString config.verifyConfig # bash
+              ''
+                ${getExe' config.package "dinit-check"} ${envfileArg} --services-dir $out
+              '';
+        };
+
+        envfileArg = if config.env-file != null then "--env-file ${config.env-file}" else "";
+      };
 
     userWrapper = pkgs.stdenv.mkDerivation {
       name = "dinit-wrapped";

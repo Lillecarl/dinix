@@ -69,11 +69,8 @@ in
     services.nginx = {
       type = "process";
       command =
-        pkgs.writeExeclineBin "nginx-launcher" # execline
+        pkgs.writeShellApplication "nginx-launcher" { } # bash
           ''
-            importas -S NGINXENV
-            importas -S DINITENV
-            foreground { echo $NGINXENV $DINITENV }
             ${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr
           '';
       restart = true;

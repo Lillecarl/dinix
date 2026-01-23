@@ -3,10 +3,6 @@
   modules ? [ ./demo.nix ],
 }:
 let
-  pkgs' = pkgs.extend (import ./overlay.nix);
-in
-let
-  pkgs = pkgs';
   inherit (pkgs) lib;
 
   eval = lib.evalModules {
