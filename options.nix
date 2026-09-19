@@ -456,6 +456,7 @@ in
   imports = [
     ./cacert.nix
     ./memcached.nix
+    ./nginx.nix
     ./openssh.nix
     ./redis.nix
     ./users.nix
