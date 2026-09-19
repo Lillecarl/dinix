@@ -2,7 +2,7 @@
 #
 # sshd decides by its own uid whether it separates privileges, so this is a
 # second image and not a second flag on the first one.
-{ ... }:
+_:
 {
   openssh.rootless = true;
 
