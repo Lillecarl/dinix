@@ -7,6 +7,7 @@
 
 let
   inherit (lib)
+    attrNames
     attrsToList
     concatLines
     filter
@@ -19,7 +20,9 @@ let
     isList
     mapAttrsToList
     mergeEqualOption
+    mkBefore
     mkDefault
+    mkIf
     mkOption
     mkOptionType
     optionalString
@@ -50,6 +53,20 @@ let
       }
       // attrs
     );
+
+  mkDinitListOption = attrs: mkDinitOption ({ type = dinixListType; } // attrs);
+
+  # getExe guesses <out>/bin/<pname> when meta.mainProgram is missing, which is
+  # wrong for a single-file derivation such as writeShellScript. Those already
+  # point at the executable, so use them as they are.
+  toCommand =
+    value:
+    if !isDerivation value then
+      value
+    else if value.meta.mainProgram or null != null then
+      getExe value
+    else
+      "${value}";
 
   envfileType = types.submodule (
     { config, ... }:
@@ -125,10 +142,10 @@ let
           default = "process";
         };
         command = mkDinitOption {
-          apply = x: if isDerivation x then getExe x else x;
+          apply = toCommand;
         };
         stop-command = mkDinitOption {
-          apply = x: if isDerivation x then getExe x else x;
+          apply = toCommand;
         };
         env-file = mkDinitOption {
           type = types.nullOr (types.either types.path envfileType);
@@ -138,14 +155,84 @@ let
           type = types.str;
           internal = true;
         };
+
+        # dinix writes to these six itself. A freeform attribute cannot hold a
+        # value derived from config: the freeform merge forces every freeform
+        # value to decide which attributes exist, so such a value would be its
+        # own input. Declaring them keeps them lazy. They behave exactly as the
+        # freeform ones do otherwise.
+        depends-on = mkDinitListOption { };
+        waits-for = mkDinitListOption { };
+        options = mkDinitListOption { };
+        restart = mkDinitOption { };
+        restart-delay = mkDinitOption { };
+        restart-limit-count = mkDinitOption { };
+
+        dinix = mkOption {
+          type = types.submodule {
+            options = {
+              critical = mkOption {
+                type = types.nullOr types.bool;
+                default = null;
+                description = ''
+                  Whether dinit must exit when this service stops, so that a
+                  container runtime restarts the whole container.
+
+                  `true` makes the boot service depend on this one, and turns
+                  off boot's own restart. When the service stops for any
+                  reason, boot stops, every service stops, and dinit exits.
+
+                  `false` makes boot wait for this one instead. The service can
+                  die and restart forever without dinit noticing.
+
+                  `null`, the default, wires nothing. Write the dependencies of
+                  the boot service yourself.
+
+                  Setting `smooth-recovery` on a critical service cancels this.
+                  Smooth recovery restarts the process in place without
+                  stopping dependents, so boot never stops and dinit never
+                  exits. Measured against dinit 0.22.1.
+                '';
+              };
+              console = mkOption {
+                type = types.bool;
+                description = ''
+                  Whether to give this service the `shares-console` option, so
+                  its output reaches the console dinit itself writes to.
+
+                  dinit discards service output by default; its default
+                  `log-type` is `none`. Under a container runtime that collects
+                  only PID 1's output, a service without this logs nowhere.
+
+                  Output passes through unchanged. dinit adds no prefix, so a
+                  service that emits JSON lines stays parseable.
+
+                  On by default for process, bgprocess and scripted services
+                  that do not set `log-type` or `logfile`.
+                '';
+              };
+            };
+          };
+          default = { };
+          description = ''
+            Settings dinix acts on itself. These never reach the service file.
+          '';
+        };
       };
 
       config =
         let
           settings = pipe config [
             attrsToList
-            # text is this attribute; including it would recurse.
-            (filter (opt: opt.name != "text" && opt.value != null))
+            # text is this attribute, and dinix holds settings dinit never sees.
+            (filter (
+              opt:
+              !(builtins.elem opt.name [
+                "text"
+                "dinix"
+              ])
+              && opt.value != null
+            ))
           ];
           # @include and friends are directives, not assignments.
           toKV =
@@ -153,6 +240,31 @@ let
             if hasPrefix "@" name then "${name} ${toStringPlus value}" else "${name} = ${toStringPlus value}";
         in
         {
+          # Deciding this from a sibling like log-type would need hasAttr on
+          # config, which forces config's key set, which needs the options
+          # definition below. That is an infinite recursion, so keep the
+          # default to the declared type alone.
+          dinix.console = mkDefault (
+            builtins.elem config.type [
+              "process"
+              "bgprocess"
+              "scripted"
+            ]
+          );
+
+          # Every definition below is unconditional, and carries the condition
+          # in its value instead. mkIf here would put config in its own
+          # condition: a freeform submodule resolves which definitions exist
+          # before config exists, so the condition cannot read config.
+          options = mkBefore (lib.optional config.dinix.console "shares-console");
+
+          # dinit gives up after 3 restarts in 10 seconds. A service that boot
+          # only waits for is meant to outlive its own crashes, so lift the
+          # limit and slow the loop down; an exporter that fails instantly
+          # would otherwise flood the one log stream a pod has.
+          restart-limit-count = mkDefault (if config.dinix.critical == false then 0 else null);
+          restart-delay = mkDefault (if config.dinix.critical == false then 5 else null);
+
           text = concatLines (
             (pipe settings [
               (filter (opt: isStringLikePlus opt.value))
@@ -253,7 +365,24 @@ in
   };
 
   config = {
-    services.boot.type = mkDefault "internal";
+    services.boot =
+      let
+        named =
+          wanted:
+          pipe config.services [
+            (lib.filterAttrs (serviceName: service: serviceName != "boot" && service.dinix.critical == wanted))
+            attrNames
+          ];
+        critical = named true;
+      in
+      {
+        type = mkDefault "internal";
+        depends-on = critical;
+        waits-for = named false;
+        # boot restarts by default, which would bring a dead critical service
+        # back up and keep dinit alive. Measured against dinit 0.22.1.
+        restart = mkDefault (if critical == [ ] then null else false);
+      };
 
     internal = {
       envfileArg = optionalString (config.env-file != null) "--env-file ${config.env-file}";
