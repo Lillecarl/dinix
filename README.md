@@ -149,10 +149,16 @@ environment.
 
 ### Users
 
-`users.files` is a store path holding `etc/passwd`, `etc/group`,
-`etc/nsswitch.conf` and an empty `var/empty`. Mount those into a container one
-file at a time: a volume over `/etc` hides the `/etc/hosts` and
-`/etc/resolv.conf` the runtime puts there and takes out name resolution.
+`users.files` is a store path holding `etc/passwd`, `etc/group`, `etc/shadow`,
+`etc/nsswitch.conf` and an empty `var/empty`, as real files rather than
+symlinks. Mount those into a container one file at a time: a volume over `/etc`
+hides the `/etc/hosts` and `/etc/resolv.conf` the runtime puts there and takes
+out name resolution.
+
+**Every shadow entry is locked and there is no option to set a password hash.**
+Nix normalises store permissions to world-readable, so a hash here would be a
+hash published to every user and process on the host. Mount a real shadow file
+over this one if an account has to log in.
 
 A process calling `getpwuid` on its own uid fails outright when that uid is
 missing from passwd, so the content matters even where nothing reads the file.
