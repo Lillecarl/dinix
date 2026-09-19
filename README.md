@@ -59,6 +59,14 @@ services.nginx = {
 A container runtime restarts a container when its PID 1 exits. So a service
 tree has to say which services must take the container down with them.
 
+**dinit always exits 0.** It has no mechanism for reporting that a service
+failed; `dinit.cc` ends in an unconditional `return EXIT_SUCCESS`. A critical
+service that fails to start still stops the container, and the container still
+restarts under `restartPolicy: Always`, which is the common case. But under
+`restartPolicy: OnFailure`, in a Job, or under a `docker run` whose caller reads
+the status, a failed service reads as a clean success and nothing retries.
+Measured against dinit 0.22.1.
+
 `services.<name>.dinix.critical` decides that, by choosing how the service
 attaches to dinit's `boot` service:
 
@@ -112,6 +120,14 @@ machinery.
 
 Set `dinix.log` rather than `log-type`: `log-type` follows from it, and
 dinit ignores a log type on a service that shares the console.
+
+**Do not check `/proc/<pid>/environ` to see whether an env-file arrived.**
+php-fpm and nginx rewrite their own environment to set the process title, so
+that file reads back empty for the master and every worker, which is
+indistinguishable from a variable that was never set. `/proc/1/environ` is no
+help either: it shows what the container was started with, not the env-file.
+Read the variable from inside the process instead, or test with a program that
+leaves its environment alone.
 
 `quiet` drops dinit's own `[  OK  ]` status lines, which otherwise share the
 stream with service output. `consoleLevel` defaults to `warn`, which keeps the
