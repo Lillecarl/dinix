@@ -127,14 +127,19 @@ in
       type = lib.types.bool;
       default = false;
       description = ''
-        Whether the container wrapper copies the user database into the root
-        filesystem before starting dinit.
+        How the user database reaches the container: by copying it into the
+        root filesystem at startup, rather than by mounting it.
 
-        Off by default, because a container root filesystem is usually
-        read-only, and because a volume mounted over /etc hides the
-        /etc/hosts and /etc/resolv.conf the runtime puts there, which takes
-        out name resolution. Mount the files in {option}`users.files`
-        individually instead.
+        Those are the two deliveries, and this picks between them. It is off by
+        default because a container root filesystem is usually read-only, and
+        because a volume mounted over /etc hides the /etc/hosts and
+        /etc/resolv.conf the runtime puts there, which takes out name
+        resolution. The other delivery is to mount the files in
+        {option}`users.files` one at a time, which is what a read-only or
+        non-root container has to do.
+
+        Setting this without {option}`users.enable` is an error rather than a
+        silent no-op.
 
         Turning this on puts a shell, rsync and coreutils in the closure of
         {option}`containerWrapper`, which is otherwise a plain binary
@@ -196,29 +201,33 @@ in
           cp "$groupPath" $out/etc/group
           cp "$shadowPath" $out/etc/shadow
           cp "$nsswitchPath" $out/etc/nsswitch.conf
+          # Nix normalises store permissions to r--r--r--, so shadow cannot be
+          # made unreadable here. That is why it never holds a hash.
         '';
-    # Nix normalises store permissions to r--r--r--, so shadow cannot be made
-    # unreadable here. That is why it never holds a hash.
 
-    internal.usersInstallScript = lib.mkIf (config.users.enable && config.users.installAtRuntime) (
-      pkgs.writeScriptBin "usergroupinstall" # bash
-        ''
-          #! ${pkgs.runtimeShell}
-          export PATH=${
-            lib.makeBinPath [
-              pkgs.rsync
-              pkgs.coreutils
-            ]
-          }:$PATH
+    internal.usersInstallScript = lib.mkIf config.users.installAtRuntime (
+      lib.throwIf (!config.users.enable)
+        "users.installAtRuntime is set but users.enable is not, so there is no user database to install."
+        (
+          pkgs.writeScriptBin "usergroupinstall" # bash
+            ''
+              #! ${pkgs.runtimeShell}
+              export PATH=${
+                lib.makeBinPath [
+                  pkgs.rsync
+                  pkgs.coreutils
+                ]
+              }:$PATH
 
-          rsync --archive ${config.users.files}/ /
-          ${lib.concatLines (
-            map (user: ''
-              mkdir --parents ${user.homeDir}
-              chown -R ${user.name} ${user.homeDir}
-            '') (lib.attrValues config.users.users)
-          )}
-        ''
+              rsync --archive ${config.users.files}/ /
+              ${lib.concatLines (
+                map (user: ''
+                  mkdir --parents ${user.homeDir}
+                  chown -R ${user.name} ${user.homeDir}
+                '') (lib.attrValues config.users.users)
+              )}
+            ''
+        )
     );
   };
 }
