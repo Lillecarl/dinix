@@ -6,7 +6,7 @@ from running dinit on a workstation.  This runs the real thing: a
 nix2container image whose entrypoint is `containerWrapper`, under podman, in a
 guest that is not this machine.
 
-Six claims, in the order they can fail:
+Eight claims, in the order they can fail:
 
     init      dinix-init makes the directories a service needs, on mounts
               that arrive 1777
@@ -15,11 +15,16 @@ Six claims, in the order they can fail:
     login     sshd accepts a key and runs a command, so the user database,
               the privilege separation user and the generated host key are
               all in place
+    buffer    a service logging to a buffer stays out of the collected
+              stream, and its output is in the buffer
     privsep   /var/empty ends up 0755, which is the mode sshd refuses to
               start without
     critical  stopping a critical service stops the container
     mustExist the same image, run without the one volume it asks for,
               stops and names the path
+    symlink   dinix-init refuses a symlink planted where a dirs entry goes,
+              rather than chowning whatever it points at
+    sigterm   SIGTERM stops the container well inside a grace period
 
 The container is given the shape Kubernetes gives one: a read-only root
 filesystem, tmpfs where something must be written, and the user database
@@ -35,15 +40,28 @@ from uml_runner.cluster import until
 
 NAME = "dinix"
 
+# What the buffered service writes.  It must not appear in `podman logs`.
+MARKER = "dinix-buffer-marker"
+
+# podman kills a container that has not stopped within its own default of 10s,
+# and Kubernetes waits 30.  Either is a long way from what dinit needs, so a
+# figure anywhere near them means SIGTERM is not being handled.
+STOP_BUDGET_MS = 5000
+
 # The files a container gets from dinix, mounted one at a time.  A volume over
 # /etc would hide the /etc/hosts and /etc/resolv.conf the runtime puts there.
 ETC = ["passwd", "group", "shadow", "nsswitch.conf"]
 
 
-def run_args(settings: dict, name: str = NAME, tmpfs: list[str] | None = None) -> str:
+def run_args(
+    settings: dict,
+    name: str = NAME,
+    tmpfs: list[str] | None = None,
+    volumes: tuple[str, ...] = (),
+) -> str:
     mounts = [
         f"--volume {settings['configDir']}/etc/{etc}:/etc/{etc}:ro" for etc in ETC
-    ]
+    ] + [f"--volume {volume}" for volume in volumes]
     # podman gives a tmpfs mode 1777, which is what makes these worth mounting:
     # dinix-init is the thing that turns them into the modes sshd insists on.
     paths = settings["tmpfs"] if tmpfs is None else tmpfs
@@ -151,6 +169,24 @@ async def test(vms: Machines) -> None:
             f"so either it did not run or its output went elsewhere:\n{logs}"
         )
 
+    # A buffer service keeps its output out of the stream the runtime collects,
+    # and dinitctl catlog is where it goes instead. Both halves matter: absent
+    # from one and present in the other.
+    if MARKER in logs:
+        raise MachineError(
+            f"[{node.name}] a service with dinix.log = \"buffer\" reached the "
+            f"collected stream, which is the one place it must not:\n{logs}"
+        )
+    buffered = await node.succeed(
+        f"podman exec {NAME} {settings['dinitctl']} catlog chatty 2>&1", timeout=120
+    )
+    if MARKER not in buffered:
+        raise MachineError(
+            f"[{node.name}] the buffer holds no output either, so it was "
+            f"discarded rather than kept:\n{buffered}"
+        )
+    print("[test] buffered output stayed out of the stream and in the buffer", flush=True)
+
     try:
         who = await ssh(node, settings, "id -u")
     except MachineError as refused:
@@ -219,6 +255,59 @@ async def test(vms: Machines) -> None:
             f"so and stop:\n{refused}"
         )
     print(f"[test] a container without {settings['mustExist']} stopped and named it", flush=True)
+
+    # A symlink planted where a dirs entry goes. create_dir_all is happy with
+    # one, and both set_permissions and chown follow it, so dinix-init has to
+    # look and refuse.
+    #
+    # It points at a directory that exists, which is the attack: a dangling
+    # symlink stops create_dir_all at EEXIST, so dinix-init refuses that one
+    # without ever reaching the check being tested here.
+    await node.succeed("rm -rf /tmp/planted && mkdir -p /tmp/planted")
+    await node.succeed("ln -s /run /tmp/planted/logs")
+    await node.succeed("chmod 0755 /tmp/planted")
+    _, planted = await node.execute(
+        f"podman run --rm {run_args(settings, 'dinix-planted', without, ('/tmp/planted:/data',))}"
+        f" {settings['imageRef']} 2>&1",
+        timeout=300,
+    )
+    if "is a symlink, refusing to touch its target" not in planted:
+        raise MachineError(
+            f"[{node.name}] dinix-init followed a planted symlink instead of "
+            f"refusing it:\n{planted}"
+        )
+    print("[test] dinix-init refused a planted symlink", flush=True)
+
+    # How long a pod deletion waits. podman sends SIGTERM and kills at its own
+    # default of 10s, so this is measured in the guest rather than across the
+    # agent, where a round trip would be most of the number.
+    await node.succeed(
+        f"podman run --detach {run_args(settings, 'dinix-term')} {settings['imageRef']}",
+        timeout=300,
+    )
+
+    async def running() -> tuple[bool, str]:
+        code, out = await node.execute(
+            f"podman exec dinix-term {settings['dinitctl']} list 2>&1", timeout=60
+        )
+        return code == 0, out.strip() or "(no control socket yet)"
+
+    await until("dinit to answer on its control socket", running, 120, node)
+    elapsed = await node.succeed(
+        "start=$(date +%s%3N)"
+        " && podman stop --time 30 dinix-term > /dev/null"
+        " && end=$(date +%s%3N) && echo $((end - start))",
+        timeout=120,
+    )
+    milliseconds = int(last_line(elapsed))
+    if milliseconds > STOP_BUDGET_MS:
+        raise MachineError(
+            f"[{node.name}] SIGTERM to the container took {milliseconds}ms, over "
+            f"the {STOP_BUDGET_MS}ms this test allows. A pod deletion would wait "
+            f"out its grace period."
+        )
+    print(f"[test] SIGTERM stopped the container in {milliseconds}ms", flush=True)
+    await node.succeed("podman rm --force dinix-term")
 
 
 run_test(test)

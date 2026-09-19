@@ -91,7 +91,10 @@ A service that `boot` only waits for gets `restart-limit-count = 0` and
 and retries 200ms apart.
 
 SIGTERM to `dinit --container` stopped two services and exited in 6ms, so a
-pod deletion does not wait out its grace period.
+pod deletion does not wait out its grace period. `podman stop` to exited, in a
+container in the test guest, measured 0.8s as an ordinary user and 2.0s as
+root — that figure is mostly podman's own work, not dinit's, and both are a
+long way from podman's 10s kill and Kubernetes' 30s default.
 
 ### Logging
 
@@ -390,3 +393,12 @@ It runs twice against two images, because sshd decides by its own uid whether
 it separates privileges and dinix renders a different configuration for each.
 `rootlessTest` adds `tests/rootless.nix` and `podman run --user 1000:1000`, and
 checks that the login arrives as uid 1000 and that no `/var/empty` was made.
+
+Eight claims, each one something this file used to assert without evidence:
+`dinix-init` makes its directories on mounts that arrive 1777; `sshd-keygen`
+runs before sshd with no shell in the image; a key login reaches a command; a
+`buffer` service stays out of the collected stream and its output is in the
+buffer; `/var/empty` ends up 0755; stopping a critical service stops the
+container; the same image without the volume `mustExist` names stops and says
+which; `dinix-init` refuses a symlink planted where a `dirs` entry goes; and
+SIGTERM stops the container well inside a grace period.
