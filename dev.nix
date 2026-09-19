@@ -186,14 +186,25 @@ let
         ];
       };
 
-      image = nix2container.buildImage {
-        name = "dinix-collection-${name}";
-        tag = "test";
-        # No copyToRoot. A collection needs no shell: every check names an
-        # absolute store path, and dinit execs its services directly.
-        config.entrypoint = [ (lib.getExe dinix.config.containerWrapper) ];
-        maxLayers = 100;
-      };
+      image = nix2container.buildImage (
+        {
+          name = "dinix-collection-${name}";
+          tag = "test";
+          # No copyToRoot by default. A collection needs no shell: every check
+          # names an absolute store path, and dinit execs its services
+          # directly. A check client the service packages do not ship arrives
+          # through collection.packages instead.
+          config.entrypoint = [ (lib.getExe dinix.config.containerWrapper) ];
+          maxLayers = 100;
+        }
+        // lib.optionalAttrs (dinix.config.collection.packages != [ ]) {
+          copyToRoot = pkgs.buildEnv {
+            name = "dinix-collection-${name}-clients";
+            paths = dinix.config.collection.packages;
+            pathsToLink = [ "/bin" ];
+          };
+        }
+      );
     in
     uml.mkTest {
       name = "dinix-collection-${name}";

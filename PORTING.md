@@ -71,6 +71,13 @@ Then add the file to `imports` in `options.nix`.
 collections.<service>` runs it. Nothing else needs editing, and no Python is
 written.
 
+A check needs a client, and the image holds only what the services reference.
+redis-cli rides along in the redis package; most services are not so
+accommodating — memcached ships a server only. `collection.packages` takes
+extra packages for the image, and the check names the client's absolute store
+path. A client that needs a pipe — `printf 'version\r\n' | nc …` — names bash
+there too and runs its pipeline through `bash -c`.
+
 Every collection gets these without asking: the image loads, the container
 runs, dinit answers on its control socket, every service reaches `started`,
 no service failed while the checks ran, and SIGTERM stops the container inside

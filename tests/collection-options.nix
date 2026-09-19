@@ -17,6 +17,20 @@ in
       '';
     };
 
+    packages = mkOption {
+      type = types.listOf types.package;
+      default = [ ];
+      description = ''
+        Extra packages for the image, on top of what the services reference.
+
+        A check that asks the service a question needs a client, and a service
+        package rarely ships one: memcached has a server only, and the image
+        holds the closure of the services and nothing else. The client — bash
+        to pipe a request into `nc`, say — goes here, and the check names its
+        absolute store path.
+      '';
+    };
+
     tmpfs = mkOption {
       type = types.listOf types.str;
       default = [ ];
