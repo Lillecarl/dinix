@@ -75,52 +75,90 @@ let
         cp $out/id_ed25519.pub $out/authorized_keys
       '';
 
-  testDinix = import ./. {
-    inherit pkgs;
-    modules = [
-      ./tests/container.nix
-      { _module.args.clientKey = clientKey; }
-    ];
-  };
+  /**
+    One container test: an image from `extraModules`, and the guest that runs
+    it.
 
-  testImage = nix2container.buildImage {
-    name = "dinix-openssh";
-    tag = "test";
-    # sshd runs the login shell named in passwd, and then looks for the command
-    # on a PATH of /usr/bin:/bin:/usr/sbin:/sbin, which it compiles in. So an
-    # ssh container needs /bin/sh and a few tools whatever else it carries;
-    # dinix's own services need none of it.
-    copyToRoot = pkgs.buildEnv {
-      name = "dinix-openssh-root";
-      paths = [ pkgs.busybox ];
-      pathsToLink = [ "/bin" ];
-    };
-    config.entrypoint = [ (lib.getExe testDinix.config.containerWrapper) ];
-    maxLayers = 100;
-  };
+    Two of these, because sshd decides by its own uid whether it separates
+    privileges, and dinix renders a different configuration for each. One
+    script drives both; `settings` carries what differs.
+  */
+  containerTestFor =
+    {
+      name,
+      extraModules ? [ ],
+      # The uid the container runs as, and the account sshd will serve.
+      uid ? 0,
+      podmanUser ? "",
+    }:
+    let
+      dinix = import ./. {
+        inherit pkgs;
+        modules = [
+          ./tests/container.nix
+          { _module.args.clientKey = clientKey; }
+        ]
+        ++ extraModules;
+      };
 
-  containerTest = uml.mkTest {
-    name = "dinix-openssh";
-    script = ./tests/openssh.py;
-    nodes.node = {
-      virtualisation.podman.enable = true;
-      environment.systemPackages = [ pkgs.openssh ];
-      boot.uml = {
-        memory = "2048M";
-        # The image unpacks into the guest's own filesystem rather than being
-        # read out of the store, so the disk holds a copy of the closure. A
-        # sparse file, so this costs nothing until it is used.
-        diskSize = 8192;
+      image = nix2container.buildImage {
+        inherit name;
+        tag = "test";
+        # sshd runs the login shell named in passwd, and then looks for the
+        # command on a PATH of /usr/bin:/bin:/usr/sbin:/sbin, which it compiles
+        # in. So an ssh container needs /bin/sh and a few tools whatever else it
+        # carries; dinix's own services need none of it.
+        copyToRoot = pkgs.buildEnv {
+          name = "${name}-root";
+          paths = [ pkgs.busybox ];
+          pathsToLink = [ "/bin" ];
+        };
+        config.entrypoint = [ (lib.getExe dinix.config.containerWrapper) ];
+        maxLayers = 100;
+      };
+
+      loginUser =
+        lib.findFirst (account: account.uid == uid)
+          (throw "no account in the test configuration has uid ${toString uid}")
+          (lib.attrValues dinix.config.users.users);
+    in
+    uml.mkTest {
+      inherit name;
+      script = ./tests/openssh.py;
+      nodes.node = {
+        virtualisation.podman.enable = true;
+        environment.systemPackages = [ pkgs.openssh ];
+        boot.uml = {
+          memory = "2048M";
+          # The image unpacks into the guest's own filesystem rather than being
+          # read out of the store, so the disk holds a copy of the closure. A
+          # sparse file, so this costs nothing until it is used.
+          diskSize = 8192;
+        };
+      };
+      settings = {
+        inherit uid podmanUser;
+        loginUser = loginUser.name;
+        copyToPodman = lib.getExe image.copyToPodman;
+        imageRef = "${image.imageName}:${image.imageTag}";
+        clientKey = "${clientKey}";
+        configDir = "${dinix.config.configDir}";
+        dinitctl = "${dinix.config.containerWrapper}/bin/dinitctl";
+        port = dinix.config.openssh.settings.Port;
+        # /run holds dinit's control socket and the generated host keys.
+        # /var/empty is sshd's privilege separation directory, which a rootless
+        # sshd never looks at.
+        tmpfs = [ "/run" ] ++ lib.optional (uid == 0) "/var/empty";
       };
     };
-    settings = {
-      copyToPodman = lib.getExe testImage.copyToPodman;
-      imageRef = "${testImage.imageName}:${testImage.imageTag}";
-      clientKey = "${clientKey}";
-      configDir = "${testDinix.config.configDir}";
-      dinitctl = "${testDinix.config.containerWrapper}/bin/dinitctl";
-      port = testDinix.config.openssh.settings.Port;
-    };
+
+  containerTest = containerTestFor { name = "dinix-openssh"; };
+
+  rootlessTest = containerTestFor {
+    name = "dinix-openssh-rootless";
+    extraModules = [ ./tests/rootless.nix ];
+    uid = 1000;
+    podmanUser = "1000:1000";
   };
 
   # buildImage's output is a JSON manifest naming every layer and the store
@@ -161,7 +199,7 @@ in
     nix2container
     uml
     clientKey
-    testImage
     containerTest
+    rootlessTest
     ;
 }

@@ -363,8 +363,8 @@ on by default.
 up. That takes running one:
 
 ```
-nix build --file ./dev.nix containerTest        # inside a build sandbox
-nix run   --file ./dev.nix containerTest.run    # outside it, with a network
+nix build --file ./dev.nix containerTest rootlessTest   # in a build sandbox
+nix run   --file ./dev.nix containerTest.run            # outside it
 ```
 
 The test boots a guest with
@@ -378,3 +378,8 @@ The container gets the shape Kubernetes gives one: a read-only root filesystem,
 a tmpfs where something has to be written, and the user database mounted a file
 at a time. `tests/openssh.py` is the script and `tests/container.nix` is the
 configuration under test.
+
+It runs twice against two images, because sshd decides by its own uid whether
+it separates privileges and dinix renders a different configuration for each.
+`rootlessTest` adds `tests/rootless.nix` and `podman run --user 1000:1000`, and
+checks that the login arrives as uid 1000 and that no `/var/empty` was made.
