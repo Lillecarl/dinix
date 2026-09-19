@@ -1,2 +1,4 @@
 /dinix-init/target/
+__pycache__/
+*.py[cod]
 /result

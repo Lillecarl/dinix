@@ -1,30 +1,50 @@
 #!/usr/bin/env python3
-"""Run a collection of dinix services in a container and ask it questions.
+"""Run a collection of dinix services and ask it questions.
 
 This script is generic.  A service port writes no Python: it declares the
 collection and its checks in Nix, and `dev.nix` passes them here as
 `vms.settings`.  See PORTING.md.
 
-What every collection gets, without asking:
+Four modes, one per reasonable environment (`vms.settings["mode"]`):
 
-    start     the image loads and the container runs
-    socket    dinit answers on its control socket
+    root     the image runs as root under podman, read-only, tmpfs where
+             something must be written
+    user     the same image runs as nobody: no chown, no run-as, and the
+             services run as the container user
+    vm-root  no container at all; dinit runs as root on the guest, state
+             under $DINIX_STATE_DIR, no dinix-init
+    vm-user  no container and no privilege; dinit --user runs as an
+             ordinary guest account, state just the same
+
+What every mode gets, without asking:
+
+    start     the system loads and dinit answers on its control socket
     started   every service named reaches "started"
-    checks    each declared command runs inside the container and its
-              output contains what the check expects
+    checks    each declared command runs and its output contains what the
+              check expects
     quiet     no service failed while all that happened
-    sigterm   SIGTERM stops the container well inside a grace period
+    sigterm   SIGTERM stops dinit well inside a grace period
 
-The container gets the shape Kubernetes gives one: a read-only root
+The container modes get the shape Kubernetes gives one: a read-only root
 filesystem, tmpfs where something must be written, and the user database
-mounted a file at a time.  A check runs through `podman exec` with an absolute
-store path, so a collection image needs no shell.
+mounted a file at a time.  A check runs through `podman exec` with an
+absolute store path, so a collection image needs no shell.
 """
 
-from uml_runner import MachineError, Machines, run_test
+from uml_runner import Machine, MachineError, Machines, run_test
 from uml_runner.cluster import until
 
+from types import SimpleNamespace
+
 NAME = "dinix-collection"
+
+# The account the vm-user mode runs dinit as: the same nobody every
+# unprivileged mode runs as, so services keep one identity across modes
+# and no output names a user. The driver never creates users, it only
+# runs things as this one. Dropping privilege uses setpriv rather than
+# runuser or su: those open a PAM session, and with no logind on the
+# guest that hangs. setpriv is syscalls all the way down.
+VM_USER = "nobody"
 
 # The files a container gets from dinix, mounted one at a time.  A volume over
 # /etc would hide the /etc/hosts and /etc/resolv.conf the runtime puts there.
@@ -35,11 +55,15 @@ ETC = ["passwd", "group", "shadow", "nsswitch.conf"]
 STOP_BUDGET_MS = 5000
 
 
-def run_args(settings: dict) -> str:
+def run_args(settings: dict, state_mount: str) -> str:
     mounts = [
         f"--volume {settings['configDir']}/etc/{etc}:/etc/{etc}:ro" for etc in ETC
+    ] + [
+        # /run holds dinit's control socket, which a read-only container
+        # cannot take on its root filesystem.
+        "--tmpfs /run",
+        state_mount,
     ]
-    tmpfs = [f"--tmpfs {path}" for path in settings["tmpfs"]]
     return " ".join(
         [
             f"--name {NAME}",
@@ -47,7 +71,6 @@ def run_args(settings: dict) -> str:
             # service port is about.
             "--network host",
             "--read-only",
-            *tmpfs,
             *mounts,
             # Empty when the container runs as root, which is podman's default.
             settings["podmanUser"] and f"--user {settings['podmanUser']}",
@@ -63,30 +86,91 @@ def last_line(output: str) -> str:
 async def test(vms: Machines) -> None:
     node = vms.node
     settings = vms.settings
+    mode = settings["mode"]
+
+    print(f"[test] collection {settings['collection']} in {mode} mode", flush=True)
+
+    if mode in ("root", "user"):
+        target = await start_container(node, settings)
+    else:
+        target = await start_vm(node, settings)
+
+    try:
+        await wait_for_socket(node, settings, target)
+        await wait_for_services(node, settings, target)
+        logs = await target.logs()
+        print(f"[test] {target.log_title}:\n{logs}", flush=True)
+        await run_checks(node, settings, target, logs)
+        await quiet_check(node, settings, target, logs)
+        await stop_cleanly(node, settings, target)
+    finally:
+        await target.cleanup()
+
+    print(f"[test] {settings['collection']} passed in {mode} mode", flush=True)
+
+
+async def start_container(node: Machine, settings: dict) -> SimpleNamespace:
     dinitctl = settings["dinitctl"]
 
-    print(f"[test] collection {settings['collection']}", flush=True)
+    # One state mount, which dinix-init populates: plain tmpfs where the
+    # container runs as root, and a named volume with :U where it runs as
+    # nobody — the runtime chowns it on creation, the way Kubernetes does
+    # emptyDir with fsGroup. No podman flag owns a tmpfs mount. The guest
+    # is thrown away with the test, so the volume goes with it and nothing
+    # cleans it.
+    if settings["podmanUser"]:
+        volume = f"dinix-{settings['collection']}-state"
+        await node.succeed(f"podman volume create {volume}", timeout=60)
+        state_mount = f"--volume {volume}:{settings['stateDir']}:U"
+    else:
+        state_mount = f"--tmpfs {settings['stateDir']}"
 
     await node.succeed(settings["copyToPodman"], timeout=900)
     await node.succeed(
-        f"podman run --detach {run_args(settings)} {settings['imageRef']}",
+        f"podman run --detach {run_args(settings, state_mount)} {settings['imageRef']}",
         timeout=300,
     )
 
-    async def answering() -> tuple[bool, str]:
-        code, out = await node.execute(
-            f"podman exec {NAME} {dinitctl} list 2>&1", timeout=60
+    async def logs() -> str:
+        return await node.succeed(f"podman logs {NAME}")
+
+    async def stop_ms() -> int:
+        elapsed = await node.succeed(
+            "start=$(date +%s%3N)"
+            f" && podman stop --time 30 {NAME} > /dev/null"
+            " && end=$(date +%s%3N) && echo $((end - start))",
+            timeout=120,
         )
+        return int(last_line(elapsed))
+
+    async def cleanup() -> None:
+        await node.succeed(f"podman rm --force {NAME}")
+
+    return SimpleNamespace(
+        run=lambda cmd: f"podman exec {NAME} {cmd}",
+        ctl=f"podman exec {NAME} {dinitctl}",
+        log_title="the container's own log",
+        logs=logs,
+        stop_ms=stop_ms,
+        stop_what="the container",
+        cleanup=cleanup,
+    )
+
+async def wait_for_socket(node: Machine, settings: dict, target: SimpleNamespace) -> None:
+    async def answering() -> tuple[bool, str]:
+        code, out = await node.execute(f"{target.ctl} list 2>&1", timeout=60)
         return code == 0, out.strip() or "(no control socket yet)"
 
     try:
         await until("dinit to answer on its control socket", answering, 180, node)
     except Exception:
-        logs = await node.succeed(f"podman logs {NAME}")
+        logs = await target.logs()
         raise MachineError(
-            f"[{node.name}] dinit never answered.\n--- container log ---\n{logs}"
+            f"[{node.name}] dinit never answered.\n--- {target.log_title} ---\n{logs}"
         ) from None
 
+
+async def wait_for_services(node: Machine, settings: dict, target: SimpleNamespace) -> None:
     # Every service the collection declared, by name. is-started rather than
     # parsing `dinitctl list`: it answers with an exit code, which is what a
     # poll wants.
@@ -94,28 +178,29 @@ async def test(vms: Machines) -> None:
 
         async def started(service: str = service) -> tuple[bool, str]:
             code, _ = await node.execute(
-                f"podman exec {NAME} {dinitctl} is-started {service}", timeout=60
+                f"{target.ctl} is-started {service}", timeout=60
             )
             status = await node.succeed(
-                f"podman exec {NAME} {dinitctl} status {service} 2>&1", timeout=60
+                f"{target.ctl} status {service} 2>&1", timeout=60
             )
             return code == 0, last_line(status) or "(no status)"
 
         try:
             await until(f"{service} to start", started, 180, node)
         except Exception:
-            logs = await node.succeed(f"podman logs {NAME}")
+            logs = await target.logs()
             raise MachineError(
-                f"[{node.name}] {service} never started.\n--- container log ---\n{logs}"
+                f"[{node.name}] {service} never started.\n--- {target.log_title} ---\n{logs}"
             ) from None
     print(f"[test] every service started: {', '.join(settings['services'])}", flush=True)
 
-    logs = await node.succeed(f"podman logs {NAME}")
-    print(f"[test] the container's own log:\n{logs}", flush=True)
 
+async def run_checks(
+    node: Machine, settings: dict, target: SimpleNamespace, logs: str
+) -> None:
     for check in settings["checks"]:
         code, out = await node.execute(
-            f"podman exec {NAME} {check['command']} 2>&1", timeout=120
+            f"{target.run(check['command'])} 2>&1", timeout=120
         )
         if code != 0 or check["expect"] not in out:
             raise MachineError(
@@ -123,10 +208,14 @@ async def test(vms: Machines) -> None:
                 f"  ran:      {check['command']}\n"
                 f"  expected: {check['expect']!r}\n"
                 f"  got:      {out.strip()!r}\n"
-                f"--- container log ---\n{logs}"
+                f"--- {target.log_title} ---\n{logs}"
             )
         print(f"[test] {check['name']}", flush=True)
 
+
+async def quiet_check(
+    node: Machine, settings: dict, target: SimpleNamespace, logs: str
+) -> None:
     # dinit reports a service that died at console-level warn, which dinix
     # leaves on for exactly this. Nothing above would notice a service that
     # started, answered and then fell over.
@@ -136,22 +225,111 @@ async def test(vms: Machines) -> None:
                 f"[{node.name}] a service failed while the checks were passing:\n{logs}"
             )
 
-    elapsed = await node.succeed(
-        "start=$(date +%s%3N)"
-        f" && podman stop --time 30 {NAME} > /dev/null"
-        " && end=$(date +%s%3N) && echo $((end - start))",
-        timeout=120,
-    )
-    milliseconds = int(last_line(elapsed))
+
+async def stop_cleanly(node: Machine, settings: dict, target: SimpleNamespace) -> None:
+    milliseconds = await target.stop_ms()
     if milliseconds > STOP_BUDGET_MS:
         raise MachineError(
-            f"[{node.name}] SIGTERM to the container took {milliseconds}ms, over "
+            f"[{node.name}] SIGTERM to {target.stop_what} took {milliseconds}ms, over "
             f"the {STOP_BUDGET_MS}ms this test allows. A pod deletion would wait "
             f"out its grace period."
         )
-    print(f"[test] SIGTERM stopped the container in {milliseconds}ms", flush=True)
+    print(f"[test] SIGTERM stopped {target.stop_what} in {milliseconds}ms", flush=True)
 
-    await node.succeed(f"podman rm --force {NAME}")
+
+async def start_vm(node: Machine, settings: dict) -> SimpleNamespace:
+    as_user = settings["mode"] == "vm-user"
+    dinit = settings["dinit"]
+    dinitctl = settings["dinitctl"]
+    state = settings["stateDir"]
+    log = f"{state}/dinix-{settings['collection']}-{settings['mode']}.log"
+    pidfile = f"{state}/dinix-{settings['collection']}-{settings['mode']}.pid"
+    sock = f"{state}/dinit.sock"
+
+    # Who the guest runs commands as, and what privilege tools it has. This
+    # is the provenance every mode below depends on: the agent is a root
+    # systemd unit, but that is worth one line of evidence rather than an
+    # assumption.
+    prov = await node.succeed(
+        "id -u; command -v setpriv runuser su; ls -ld /tmp", timeout=60
+    )
+    print(f"[test] guest shell:\n{prov}", flush=True)
+
+    # The state directory belongs to the account dinit runs as, and with it
+    # everything under it that the services keep. The driver runs as root
+    # either way; in vm-root that is also the account, so nothing is handed
+    # over. Everything a user touches below it creates itself: the guest's
+    # filesystem refuses a file one user made to another, so the log, the
+    # pid file and the socket are written by whoever runs dinit, never by
+    # the driver.
+    await node.succeed(f"mkdir --parents {state}", timeout=60)
+    for path in settings["tmpfs"]:
+        await node.succeed(f"mkdir --parents {path}", timeout=60)
+    if as_user:
+        await node.succeed(f"chown {VM_USER} {state}", timeout=60)
+        for path in settings["tmpfs"]:
+            await node.succeed(f"chown -R {VM_USER} {path}", timeout=60)
+
+    if as_user:
+        # dinit --user takes no container flags, and the wrapper bakes in
+        # no socket path, so both are said here. Numeric ids: this setpriv
+        # parses --reuid by name but --regid by number only, so both are
+        # resolved first.
+        ids = await node.succeed(f"id -u {VM_USER}; id -g {VM_USER}", timeout=60)
+        uid, gid = ids.split()
+        become = f"setpriv --reuid {uid} --regid {gid} --clear-groups -- "
+        start = (
+            f"{become}/bin/sh -c 'echo $$ > {pidfile};"
+            f" exec {dinit} --user --socket-path {sock} > {log} 2>&1' & echo $!"
+        )
+        ctl = f"{become}env DINIT_SOCKET_PATH={sock} {dinitctl}"
+        run = lambda cmd: f"{become}{cmd}"
+    else:
+        start = (
+            f"/bin/sh -c 'echo $$ > {pidfile};"
+            f" exec {dinit} --socket-path {sock} > {log} 2>&1' & echo $!"
+        )
+        ctl = f"env DINIT_SOCKET_PATH={sock} {dinitctl}"
+        run = lambda cmd: cmd
+
+    out = await node.succeed(start, timeout=60)
+    # The launch output is the only place a failure to start speaks: a
+    # missing privilege tool or a bad flag dies here, before any socket
+    # exists to poll for.
+    if out.strip():
+        print(f"[test] launch said:\n{out}", flush=True)
+    launched = await node.succeed(
+        f"for i in $(seq 1 50); do [ -s {pidfile} ] && break; sleep 0.1; done"
+        f" && cat {pidfile}",
+        timeout=60,
+    )
+    pid = launched.strip()
+    print(f"[test] dinit runs as pid {pid}", flush=True)
+
+    async def logs() -> str:
+        return await node.succeed(f"cat {log}")
+
+    async def stop_ms() -> int:
+        elapsed = await node.succeed(
+            "start=$(date +%s%3N)"
+            f" && kill {pid} && for i in $(seq 1 300); do kill -0 {pid} 2>/dev/null || break; sleep 0.1; done"
+            " && end=$(date +%s%3N) && echo $((end - start))",
+            timeout=120,
+        )
+        return int(last_line(elapsed))
+
+    async def cleanup() -> None:
+        return None
+
+    return SimpleNamespace(
+        run=run,
+        ctl=ctl,
+        log_title="dinit's own log",
+        logs=logs,
+        stop_ms=stop_ms,
+        stop_what="dinit",
+        cleanup=cleanup,
+    )
 
 
 run_test(test)

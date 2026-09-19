@@ -35,11 +35,13 @@ in
       type = types.listOf types.str;
       default = [ ];
       description = ''
-        Writable paths the container needs, on top of `/run`.
+        Writable paths the services need, on top of `/run`.
 
-        A data directory belongs here. podman supplies a tmpfs mode 1777, so
-        this also puts {option}`dirs` under test: the service only starts if
-        dinix-init set the mode the program insists on.
+        The containers mount one state directory and dinix-init makes
+        these inside it, so this list is what the vm modes make on the
+        guest instead. Either way every path here has to work, which also
+        puts {option}`dirs` under test: a service only starts if dinix-init
+        set the mode the program insists on.
       '';
     };
 

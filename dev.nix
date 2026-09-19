@@ -49,10 +49,10 @@ let
   imageFor =
     consolidate:
     let
-      dinix = import ./. {
+      dinix = (import ./. {
         inherit pkgs;
         modules = modules ++ [ { consolidateConfig = consolidate; } ];
-      };
+      }).rootContainer;
     in
     nix2container.buildImage {
       name = "dinix-${if consolidate then "consolidated" else "split"}";
@@ -109,14 +109,14 @@ let
       podmanUser ? "",
     }:
     let
-      dinix = import ./. {
+      dinix = (import ./. {
         inherit pkgs;
         modules = [
           ./tests/container.nix
           { _module.args.clientKey = clientKey; }
         ]
         ++ extraModules;
-      };
+      }).rootContainer;
 
       image = nix2container.buildImage {
         inherit name;
@@ -172,19 +172,47 @@ let
 
     This is what a service port uses. `tests/collections/<name>.nix` is an
     ordinary dinix configuration plus a `collection` attribute saying which
-    writable paths the services need and what to ask the running container.
+    writable paths the services need and what to ask the running system.
     No Python. See PORTING.md.
+
+    Four test modes, one per reasonable environment. Each runs the dinix
+    output of the same name, except the two vm modes, which run the one
+    output without a container twice: as root and as an ordinary user.
+
+    - `root`: the rootContainer output as a container running as root.
+    - `user`: the nobodyContainer output as a container running as nobody.
+    - `vm-root`: the noContainer output with dinit as root on the guest.
+    - `vm-user`: the noContainer output with dinit --user on the guest.
   */
   collectionTest =
-    name:
+    name: testMode:
     let
-      dinix = import ./. {
+      output = {
+        root = "rootContainer";
+        user = "nobodyContainer";
+        vm-root = "noContainer";
+        vm-user = "noContainer";
+      }."${testMode}";
+      isVm = lib.hasPrefix "vm-" testMode;
+
+      # The state directory the evaluation baked in, so the vm driver puts
+      # everything a run creates — not just service data — under it. The
+      # vm-user mode runs dinit as nobody on the guest, which cannot write
+      # the /var/lib default, so building it without the variable set is
+      # an error rather than a test that cannot pass.
+      inherit (import ./service-lib.nix) stateDir;
+
+      outputs = import ./. {
         inherit pkgs;
         modules = [
           ./tests/collection-options.nix
           (./tests/collections + "/${name}.nix")
-        ];
+        ]
+        ++ lib.optional (testMode == "vm-user" && stateDir == "/var/lib") (
+          throw "The vm-user test runs dinit as nobody, which cannot write the default /var/lib state. Export DINIX_STATE_DIR naming a directory first; it is read where this builds."
+        );
       };
+      dinix = outputs.${output};
 
       image = nix2container.buildImage (
         {
@@ -207,29 +235,54 @@ let
       );
     in
     uml.mkTest {
-      name = "dinix-collection-${name}";
+      name = "dinix-collection-${name}-${testMode}";
       script = ./tests/collection.py;
       nodes.node = testGuest;
       settings = {
         collection = name;
+        mode = testMode;
+        configDir = "${dinix.config.configDir}";
+        inherit (dinix.config.collection) services checks;
+        # /run holds dinit's control socket, which a read-only container
+        # cannot take on its root filesystem. A guest has a writable /run
+        # of its own, so only the container modes mount one.
+        tmpfs = lib.optional (!isVm) "/run" ++ dinix.config.collection.tmpfs;
+        # The state directory every mode puts state under: mounted once
+        # for the containers, made on the guest for the vm modes.
+        inherit stateDir;
+        # The vm-user mode runs dinit --user; every other mode runs the
+        # container entrypoint, on the guest directly where there is no
+        # container. Only the wrapper a mode runs is referenced, so no
+        # mode builds the other one's.
+        dinit = "${
+          if testMode == "vm-user" then dinix.config.userWrapper else dinix.config.containerWrapper
+        }/bin/dinit";
+        dinitctl = "${
+          if testMode == "vm-user" then dinix.config.userWrapper else dinix.config.containerWrapper
+        }/bin/dinitctl";
+      }
+      // lib.optionalAttrs (!isVm) {
         copyToPodman = lib.getExe image.copyToPodman;
         imageRef = "${image.imageName}:${image.imageTag}";
-        configDir = "${dinix.config.configDir}";
-        dinitctl = "${dinix.config.containerWrapper}/bin/dinitctl";
-        podmanUser = "";
-        inherit (dinix.config.collection) services checks;
-        tmpfs = [ "/run" ] ++ dinix.config.collection.tmpfs;
+        # Empty when the container runs as root, which is podman's default.
+        podmanUser = if testMode == "user" then "65534:65534" else "";
       };
     };
 
-  # Every file in tests/collections is a test. Adding a service port means
-  # adding a file there, and nothing in this one.
+  # Every file in tests/collections is a test in four modes. Adding a
+  # service port means adding a file there, and nothing in this one.
+  collectionModes = [
+    "root"
+    "user"
+    "vm-root"
+    "vm-user"
+  ];
   collections = lib.mapAttrs' (
     file: _:
     let
       name = lib.removeSuffix ".nix" file;
     in
-    lib.nameValuePair name (collectionTest name)
+    lib.nameValuePair name (lib.genAttrs collectionModes (collectionTest name))
   ) (builtins.readDir ./tests/collections);
 
   containerTest = containerTestFor { name = "dinix-openssh"; };

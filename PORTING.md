@@ -68,8 +68,26 @@ Then add the file to `imports` in `options.nix`.
 ```
 
 `dev.nix` finds it by being in that directory. `nix build --file ./dev.nix
-collections.<service>` runs it. Nothing else needs editing, and no Python is
+collections.<service>.<mode>` runs it in one of four modes — `root` and
+`user` containers, and `vm-root` and `vm-user` without containerization —
+and a port passes in all four. Nothing else needs editing, and no Python is
 written.
+
+`import ./.` answers one attribute per mode — `rootContainer`,
+`nobodyContainer`, `noContainer` — for the same modules, so differences
+between environments live in the evaluation, where a build either works or
+fails loudly. The two vm test modes run the one output without a container
+twice: as root and as an ordinary user. {option}`mode` names which output a
+configuration is; a collection reads it where privilege differs by mode,
+which is run-as and nothing else: only the rootContainer output sets it,
+because an unprivileged dinit cannot change user at all.
+
+A data directory defaults to `$DINIX_STATE_DIR/<service>/<instance>`, or
+`/var/lib/...` when the variable is unset. The containers mount one state
+directory and dinix-init makes the data directories inside it; the vm modes
+run no dinix-init at all, so the driver makes the `collection.tmpfs` paths
+on the guest instead. Uncontainerized never means the host gets trashed:
+every path a run creates sits under the state directory.
 
 A check needs a client, and the image holds only what the services reference.
 redis-cli rides along in the redis package; most services are not so

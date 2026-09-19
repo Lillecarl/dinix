@@ -1,7 +1,7 @@
 # A collection: the dinix configuration under test, plus what to ask the
 # running container. dev.nix turns this into an image, a guest and a test.
 # See PORTING.md.
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 let
   # The page under test. A store path like any other, so the worker user —
   # nginx's compiled-in nobody — can read it without anything being done.
@@ -32,14 +32,16 @@ in
   # in the user database dinix writes, and dinit resolves the name against
   # the passwd and group files the container mounts a file at a time.
   # run-as is a dinit setting, so it goes on the rendered service rather
-  # than on the nginx instance.
-  services.nginx-main.run-as = "nobody";
+  # than on the nginx instance. Only the rootContainer output sets it: an
+  # unprivileged dinit cannot change user at all.
+  services.nginx-main.run-as = lib.mkIf (config.mode == "rootContainer") "nobody";
 
   # The master writes its pid file, its early error log and its temp
   # directory here, so the data directory belongs to the account the
   # service runs as. 65534 twice is users.nobody in users.nix, which is
   # only a default: a configuration with its own nobody must say so here
-  # as well.
+  # as well. An unprivileged dinix-init cannot chown, but it stats first
+  # and skips what already matches, so this holds in every mode.
   dirs.${config.nginx.main.dataDir} = {
     uid = 65534;
     gid = 65534;

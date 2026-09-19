@@ -12,8 +12,11 @@ let
 
   # Whether there is any init work, and so a dinix-init service to order
   # against. Read from inside the service submodule, so it must not depend on
-  # config.services.
-  needsInit = config.dirs != { } || config.mustExist != { };
+  # config.services. No init runs uncontainerized at all: without a container
+  # there is no read-only root and no volume to mount, so making state is the
+  # environment's own job and these go unenforced.
+  needsInit =
+    config.mode != "noContainer" && (config.dirs != { } || config.mustExist != { });
 
   inherit (lib)
     attrNames
@@ -463,6 +466,34 @@ in
   ];
 
   options = {
+    mode = mkOption {
+      type = types.enum [
+        "rootContainer"
+        "nobodyContainer"
+        "noContainer"
+      ];
+      default = "rootContainer";
+      description = ''
+        Which environment this configuration is evaluated for. A dinix
+        instantiation answers one attribute per mode; see default.nix.
+
+        `rootContainer` runs dinit as root in a container: dinix-init makes
+        every directory, and services may change user with run-as.
+
+        `nobodyContainer` runs the same container as nobody: dinix-init
+        makes directories but can own none, so data directories arrive
+        owned already — the runtime mounts them that way, as Kubernetes
+        does with fsGroup — and services run as the container user, never
+        through run-as, which an unprivileged dinit cannot do.
+
+        `noContainer` runs dinit directly, as whatever user starts it:
+        no dinix-init runs at all, so {option}`dirs` and
+        {option}`mustExist` go unenforced and the environment provides
+        state instead, under $DINIX_STATE_DIR. Nothing here names a user,
+        so the same output serves root and unprivileged runs alike.
+      '';
+    };
+
     name = mkOption {
       type = types.str;
       default = "dinixLauncher";

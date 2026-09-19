@@ -4,7 +4,21 @@
 # It mirrors `multiService` in services-flake's nix/lib.nix deliberately: a
 # port reads that repository's module for a service and maps it option for
 # option. See PORTING.md.
-{
+rec {
+  /**
+    Where instances keep their data when no dataDir says otherwise.
+
+    $DINIX_STATE_DIR when the evaluating environment sets it, /var/lib
+    when it does not. An uncontainerized run has no volume to mount, so
+    the environment names the state directory instead. getEnv is
+    pure-safe: it reads "" outside impure evaluation, so flake consumers
+    keep /var/lib without noticing.
+  */
+  stateDir =
+    let
+      env = builtins.getEnv "DINIX_STATE_DIR";
+    in
+    if env == "" then "/var/lib" else env;
   /**
     Turn a per-service module into a dinix module offering
     `<serviceName>.<instance>`.
@@ -60,7 +74,7 @@
 
             dataDir = mkOption {
               type = types.str;
-              default = "/var/lib/${serviceName}/${name}";
+              default = "${stateDir}/${serviceName}/${name}";
               description = ''
                 Where this instance keeps its data.
 
@@ -68,6 +82,10 @@
                 uses: a dinix service runs in a container, so this is a volume.
                 dinix makes it before any service starts, which is why a ported
                 service needs no shell to `mkdir` it.
+
+                The default sits under $DINIX_STATE_DIR, or /var/lib when the
+                variable is unset: an uncontainerized run has no volume to
+                mount, so the environment names the state directory instead.
               '';
             };
 
