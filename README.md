@@ -201,10 +201,16 @@ and `etc/nsswitch.conf`, as real files rather than symlinks. Mount those into a
 container one file at a time: a volume over `/etc` hides the `/etc/hosts` and
 `/etc/resolv.conf` the runtime puts there and takes out name resolution.
 
-**Every shadow entry is locked and there is no option to set a password hash.**
+**No shadow entry can match a password, and there is no option to set a hash.**
 Nix normalises store permissions to world-readable, so a hash here would be a
 hash published to every user and process on the host. Mount a real shadow file
-over this one if an account has to log in.
+over this one if an account has to log in with a password.
+
+The field is `*`, not the `!` that `passwd -l` writes. Both refuse every
+password. But OpenSSH on Linux compiles in `!` as its locked-account marker,
+and with PAM off it then refuses the account outright — key login included,
+with `User root not allowed because account is locked`. Measured against
+OpenSSH 10.5p1, `platform.c`.
 
 A process calling `getpwuid` on its own uid fails outright when that uid is
 missing from passwd, so the content matters even where nothing reads the file.

@@ -43,21 +43,34 @@ let
         shadowText = lib.mkOption {
           type = lib.types.str;
           description = ''
-            The shadow line for this account, always with a locked password.
+            The shadow line for this account. No password can ever match it.
 
             There is deliberately no option to set a password hash. Everything
             dinix renders goes into the Nix store, and the store is readable by
             every user and every process on the host. A hash there is a hash
             published. Mount a real shadow file over this one if an account
-            has to be able to log in.
+            has to log in with a password.
+
+            The field is `*` rather than `!`, which is what `passwd -l` writes.
+            Both refuse every password, but OpenSSH on Linux reads a leading
+            `!` as a locked account and then refuses the account outright,
+            key login included, whenever PAM is off. Measured against OpenSSH
+            10.5p1.
           '';
         };
       };
       config = {
         text = "${config.name}:${config.password}:${toString config.uid}:${toString config.gid}:${config.comment}:${config.homeDir}:${config.shell}";
         # login:password:lastchange:min:max:warn:inactive:expire:reserved.
-        # "!" is a locked password: no hash can match it.
-        shadowText = "${config.name}:!:1::::::";
+        #
+        # "*" and not "!", although both mean no password can match. On Linux
+        # OpenSSH compiles in LOCKED_PASSWD_PREFIX = "!" and nothing else, so
+        # with UsePAM off it reads "!" as a locked account and refuses every
+        # login, key or not: "User root not allowed because account is locked".
+        # "*" matches none of its patterns and no crypt output, so a key login
+        # works and a password login still cannot. Measured against OpenSSH
+        # 10.5p1, platform.c.
+        shadowText = "${config.name}:*:1::::::";
       };
     }
   );
@@ -190,7 +203,16 @@ in
         "etc/passwd" = lib.concatLines (map (user: user.text) users);
         "etc/group" = lib.concatLines (map (group: group.text) groups);
         "etc/shadow" = lib.concatLines (map (user: user.shadowText) users);
-        "etc/nsswitch.conf" = "hosts: files dns\n";
+        # Every database this file leaves out is a database glibc has no
+        # source for. sshd then calls a real account an "invalid user",
+        # because getpwnam found nothing to read.
+        "etc/nsswitch.conf" = lib.concatLines [
+          "passwd:    files"
+          "group:     files"
+          "shadow:    files"
+          "hosts:     files dns"
+          "services:  files"
+        ];
       };
 
     internal.usersInstallScript = lib.mkIf config.users.installAtRuntime (
