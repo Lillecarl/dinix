@@ -456,6 +456,7 @@ in
   imports = [
     ./cacert.nix
     ./openssh.nix
+    ./redis.nix
     ./users.nix
   ];
 

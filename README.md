@@ -311,6 +311,29 @@ calls `getpwnam` on the login name and reports `invalid user` when it finds
 nothing, which names neither the uid nor the file. dinix writes root and nobody
 and no one else.
 
+## Redis
+
+`redis.<instance>` runs one or more redis servers. The options are
+[services-flake](https://github.com/juspay/services-flake)'s, option for
+option:
+
+```nix
+redis.main.enable = true;
+redis.cache = {
+  enable = true;
+  port = 6380;
+};
+```
+
+Each instance becomes a dinit service called `redis-<instance>`, and its
+`dataDir` becomes a `dirs` entry. No shell: services-flake wraps redis in a
+start script to make that directory, and dinix has already made it before any
+service starts.
+
+This is the worked example for [PORTING.md](PORTING.md). The rest of that
+catalogue — PostgreSQL, MySQL, MongoDB, Nginx and about thirty others — is
+mostly the same work.
+
 ## CA certificates
 
 A container built from a Nix closure has no `/etc/ssl`. A program that falls
@@ -413,6 +436,28 @@ The container gets the shape Kubernetes gives one: a read-only root filesystem,
 a tmpfs where something has to be written, and the user database mounted a file
 at a time. `tests/openssh.py` is the script and `tests/container.nix` is the
 configuration under test.
+
+### Adding a service, and testing it
+
+A **collection** is a dinix configuration plus what to ask the container that
+runs it. `tests/collections/<name>.nix` is the whole of it — services, the
+writable paths they need, and a list of commands with the output each must
+produce. `dev.nix` finds the file by being in that directory:
+
+```
+nix build --file ./dev.nix collections.redis
+```
+
+No Python. Every collection gets the same lifecycle assertions for free: the
+image loads, dinit answers on its control socket, every service reaches
+`started`, none of them failed while the checks ran, and SIGTERM stops the
+container inside a grace period.
+
+`redis.nix` is a service ported from
+[services-flake](https://github.com/juspay/services-flake), and
+[PORTING.md](PORTING.md) is how to port the next one.
+
+### The openssh test
 
 It runs twice against two images, because sshd decides by its own uid whether
 it separates privileges and dinix renders a different configuration for each.
