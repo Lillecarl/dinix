@@ -62,12 +62,14 @@ in
       };
     };
     users.enable = true;
-    services.boot = {
-      type = "internal";
-      depends-on = [ "nginx" ] ++ lib.genList toString (builtins.floor (generatedServiceCount / 2));
-    };
+    # dinix.critical wires nginx to boot. These are wired by hand, to check
+    # that both reach the same boot service.
+    services.boot.depends-on = lib.genList toString (builtins.floor (generatedServiceCount / 2));
     services.nginx = {
       type = "process";
+      # nginx is the reason this container exists, so dinit exits when it
+      # stops and the container runtime restarts the lot.
+      dinix.critical = true;
       command = pkgs.writeShellApplication {
         name = "nginx-launcher";
         text = # bash

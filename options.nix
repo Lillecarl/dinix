@@ -272,7 +272,9 @@ let
             ])
             ++ (pipe settings [
               (filter (opt: isList opt.value))
-              (map (opt: map (listVal: "${opt.name}: ${toStringPlus listVal}") opt.value))
+              # Two modules asking for the same dependency, or for an option
+              # dinix also sets, must not write the line twice.
+              (map (opt: map (listVal: "${opt.name}: ${toStringPlus listVal}") (lib.unique opt.value)))
               lib.flatten
             ])
           );
