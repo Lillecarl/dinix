@@ -105,7 +105,7 @@ Two things about a check, both measured by getting them wrong:
 | `availability.restart = "on_failure"` | `dinix.critical = false` |
 | `namespace` | nothing; dinit has no namespaces |
 
-Four things change on the way across, and they are the whole of the work:
+Five things change on the way across, and they are the whole of the work:
 
 - **No shell.** services-flake wraps most services in a `writeShellApplication`
   to make a directory and export a variable. dinix makes directories with
@@ -121,6 +121,10 @@ Four things change on the way across, and they are the whole of the work:
   process to start and no more. A service that must not start before another
   is *ready* needs that readiness expressing some other way — usually the
   program's own flag, sometimes a `scripted` service that blocks.
+- **The container runs as root, and some services refuse that.** memcached
+  does, and so does postgres's `initdb`. dinit's `run-as` changes user before
+  exec, so the process never sees root: the source module's privilege story is
+  the collection's to tell, and `nobody` is in the user database dinix writes.
 - **Secrets and passwords are mounted**, never rendered into the store.
   Everything dinix generates is world-readable. See the host key note in
   README.md.

@@ -334,6 +334,28 @@ This is the worked example for [PORTING.md](PORTING.md). The rest of that
 catalogue — PostgreSQL, MySQL, MongoDB, Nginx and about thirty others — is
 mostly the same work.
 
+## Memcached
+
+`memcached.<instance>` runs one or more memcached servers. The options are
+services-flake's, option for option: `package`, `bind`, `port`, `startArgs`.
+
+```nix
+memcached.main.enable = true;
+```
+
+Each instance becomes a dinit service called `memcached-<instance>`. memcached
+keeps no data on disk, so unlike redis there is no `dirs` entry and `dataDir`
+sits unused — the same shape the services-flake module has.
+
+**memcached refuses to run as root, and the container runs as root.** Set
+`memcached.<name>.run-as = "nobody"` — dinit changes user before exec, so the
+server never sees root and needs no `-u`. `nobody` is in the user database
+dinix writes, and dinit resolves the name against the passwd and group files
+the container mounts a file at a time.
+
+The test also shows [PORTING.md](PORTING.md)'s `collection.packages`: a check
+that asks the service a question needs a client, and memcached ships none.
+
 ## CA certificates
 
 A container built from a Nix closure has no `/etc/ssl`. A program that falls
