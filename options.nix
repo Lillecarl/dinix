@@ -5,20 +5,27 @@
   ...
 }:
 
-with lib;
-
 let
-  # mkOption wrapper that sets description and default
-  mkDinitOption =
-    attrs:
-    mkOption (
-      {
-        type = dinixStringLikePlusType;
-        description = "See DINIT-SERVICE(5)";
-        default = null;
-      }
-      // attrs
-    );
+  inherit (lib)
+    attrsToList
+    concatLines
+    filter
+    generators
+    getExe
+    getExe'
+    hasPrefix
+    isBool
+    isDerivation
+    isList
+    mapAttrsToList
+    mergeEqualOption
+    mkDefault
+    mkOption
+    mkOptionType
+    optionalString
+    pipe
+    types
+    ;
 
   dinixStringLikePlusType = mkOptionType {
     name = "stringLikePlus";
@@ -30,18 +37,30 @@ let
   dinixListType = types.nullOr (types.listOf dinixStringLikePlusType);
 
   isStringLikePlus =
-    value: value == null || (!isList value && strings.isConvertibleWithToString value);
-  toStringPlus = value: if isBool value then boolToString value else toString value;
+    value: value == null || (!isList value && lib.strings.isConvertibleWithToString value);
+  toStringPlus = value: if isBool value then lib.boolToString value else toString value;
 
-  # Environment configuration type.
+  mkDinitOption =
+    attrs:
+    mkOption (
+      {
+        type = dinixStringLikePlusType;
+        description = "See DINIT-SERVICE(5)";
+        default = null;
+      }
+      // attrs
+    );
+
   envfileType = types.submodule (
     { config, ... }:
     {
       options = {
         enable = mkOption {
           type = types.bool;
-          default = false;
-          description = "If we should add env-file argument to launcher script";
+          description = ''
+            Whether to pass this file to dinit. Set by default when any other
+            option in this set is not at its default.
+          '';
         };
         clear = mkOption {
           type = types.bool;
@@ -61,7 +80,7 @@ let
         import = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          description = "List of variables to import";
+          description = "List of variables to import from the ambient environment";
         };
         text = mkOption {
           type = types.str;
@@ -70,12 +89,11 @@ let
         };
         file = mkOption {
           type = types.package;
-          description = "Rendered env-file file";
+          description = "Rendered env-file";
           internal = true;
         };
       };
       config = {
-        # Set enable if anything isn't it's default value
         enable = mkDefault (
           config.clear || config.variables != { } || config.unset != [ ] || config.import != [ ]
         );
@@ -93,23 +111,24 @@ let
     }
   );
 
+  # A dinit service description. The freeform type covers every option in
+  # dinit-service(5); the declared ones below only add conversions on top.
+  # An option the manpage writes with a colon suffix (depends-on:) takes a Nix
+  # list here, and each element becomes its own line.
   serviceType = types.submodule (
     { config, ... }:
     {
-      # This covers all all options from the dinit-service manpage
-      # If not immidiately obvious from their docs: Options documented as ending
-      # with a colon (depends-on: for example) should be nix lists.
       freeformType = types.attrsOf (types.either dinixListType dinixStringLikePlusType);
-      # Some types get special treatment
+
       options = {
         type = mkDinitOption {
           default = "process";
         };
         command = mkDinitOption {
-          apply = x: (if isDerivation x then getExe x else x);
+          apply = x: if isDerivation x then getExe x else x;
         };
         stop-command = mkDinitOption {
-          apply = x: (if isDerivation x then getExe x else x);
+          apply = x: if isDerivation x then getExe x else x;
         };
         env-file = mkDinitOption {
           type = types.nullOr (types.either types.path envfileType);
@@ -120,28 +139,29 @@ let
           internal = true;
         };
       };
+
       config =
         let
-          options = pipe config [
+          settings = pipe config [
             attrsToList
-            (filter (opt: opt.name != "text" && opt.value != null)) # Don't process text recursively
+            # text is this attribute; including it would recurse.
+            (filter (opt: opt.name != "text" && opt.value != null))
           ];
+          # @include and friends are directives, not assignments.
           toKV =
             name: value:
             if hasPrefix "@" name then "${name} ${toStringPlus value}" else "${name} = ${toStringPlus value}";
         in
         {
           text = concatLines (
-            # Make lines of all "string-like" options
-            (pipe options [
+            (pipe settings [
               (filter (opt: isStringLikePlus opt.value))
               (map (opt: toKV opt.name opt.value))
             ])
-            # Make lines of all list options
-            ++ (pipe options [
+            ++ (pipe settings [
               (filter (opt: isList opt.value))
               (map (opt: map (listVal: "${opt.name}: ${toStringPlus listVal}") opt.value))
-              flatten
+              lib.flatten
             ])
           );
         };
@@ -152,42 +172,80 @@ in
   imports = [
     ./users.nix
   ];
+
   options = {
     name = mkOption {
       type = types.str;
       default = "dinixLauncher";
-      description = "What to call the dinix launcher script";
+      description = "Derivation name for the generated wrappers.";
     };
-    verifyConfig = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Whether to call dinitcheck before passing build";
-    };
+
     services = mkOption {
       type = types.attrsOf serviceType;
       default = { };
-      description = "dinit services configuration, see dinit-service(5)";
+      description = "dinit services, one attribute per service. See dinit-service(5).";
     };
+
     package = mkOption {
       type = types.package;
       default = pkgs.dinit;
+      description = "The dinit package to configure, wrap and verify against.";
     };
+
     env-file = mkOption {
       type = types.nullOr (types.either types.path envfileType);
       apply = value: if value.enable or false then value.file else value;
       default = null;
+      description = ''
+        Environment file dinit itself reads, applied to every service. Either a
+        path, or an attribute set rendered into one. See dinit(8).
+      '';
     };
+
+    verifyConfig = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Whether to run dinit-check over the rendered services at build time.";
+    };
+
     userWrapper = mkOption {
       type = types.package;
+      description = ''
+        dinit and its tools, wrapped to read this configuration straight from
+        the store. For running a dinix configuration as an unprivileged user:
+        `dinit --user`.
+      '';
     };
+
     containerWrapper = mkOption {
       type = types.package;
-    };
-    internal = mkOption {
-      type = types.anything;
       description = ''
-        Here you can find various intermediate representations for mangling
-        options into a derivation containing a complete dinit configuration
+        dinit as PID 1 of a container. Copies the services into /run/services,
+        installs the user database, then execs `dinit --container`.
+      '';
+    };
+
+    internal = mkOption {
+      type = types.submodule {
+        options = {
+          services-dir = mkOption {
+            type = types.package;
+            description = "Directory holding one rendered file per service.";
+          };
+          envfileArg = mkOption {
+            type = types.str;
+            description = "The --env-file argument, or the empty string.";
+          };
+          usersInstallScript = mkOption {
+            type = types.nullOr types.package;
+            default = null;
+            description = "Script that installs the user database into the rootfs.";
+          };
+        };
+      };
+      description = ''
+        Intermediate results on the way from these options to a derivation
+        holding a complete dinit configuration.
       '';
       internal = true;
       default = { };
@@ -195,82 +253,39 @@ in
   };
 
   config = {
-    # Make boot service internal by default
     services.boot.type = mkDefault "internal";
 
-    # Intermediate steps for going from Nix options into dinit configuration derivation
-    internal =
-      let
-        writeMultipleFiles =
-          {
-            name,
-            files,
-            extraCommands ? "",
-          }:
-          let
-            fileList = lib.mapAttrsToList (path: file: {
-              inherit path;
-              content = file.content or file;
-              mode = if file.executable or false then "755" else file.mode or "644";
-            }) files;
+    internal = {
+      envfileArg = optionalString (config.env-file != null) "--env-file ${config.env-file}";
 
-            # Create attribute names for passAsFile
-            passAsFileAttrs = builtins.listToAttrs (
-              lib.imap0 (i: file: {
-                name = "file${toString i}";
-                value = file.content;
-              }) fileList
-            );
+      services-dir = pkgs.runCommand "dinix-services" { } (
+        concatLines (
+          [ "mkdir --parents $out" ]
+          ++ (mapAttrsToList (
+            serviceName: service:
+            "cp ${pkgs.writeText "dinix-service-${serviceName}" service.text} $out/${serviceName}"
+          ) config.services)
+          ++ lib.optional config.verifyConfig "${getExe' config.package "dinit-check"} ${config.internal.envfileArg} --services-dir $out"
+        )
+      );
+    };
 
-            passAsFileNames = builtins.attrNames passAsFileAttrs;
-
-            commands =
-              (lib.imap0 (i: file: ''
-                mkdir -p $out/$(dirname "${file.path}")
-                cp "$file${toString i}Path" $out/${file.path}
-                chmod ${file.mode} $out/${file.path}
-              '') fileList)
-              ++ (lib.toList extraCommands);
-
-          in
-          pkgs.runCommand name (
-            passAsFileAttrs
-            // {
-              passAsFile = passAsFileNames;
-            }
-          ) (builtins.concatStringsSep "\n" commands);
-      in
-      rec {
-        # Write service files and friends to disk
-        services-dir = writeMultipleFiles {
-          name = "services-dir";
-          files = mapAttrs (serviceName: serviceValue: { content = serviceValue.text; }) config.services;
-          # Config verification
-          extraCommands =
-            optionalString config.verifyConfig # bash
-              ''
-                ${getExe' config.package "dinit-check"} ${envfileArg} --services-dir $out
-              '';
-        };
-
-        envfileArg = if config.env-file != null then "--env-file ${config.env-file}" else "";
-      };
-
-    userWrapper = pkgs.stdenv.mkDerivation {
-      name = "dinit-wrapped";
-      src = config.package;
-      nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
-      installPhase = # bash
+    userWrapper =
+      pkgs.runCommand config.name
+        {
+          nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+          meta.mainProgram = "dinit";
+        }
         ''
           mkdir --parents $out/bin
-          makeBinaryWrapper $src/bin/dinit $out/bin/dinit \
+          makeBinaryWrapper ${getExe' config.package "dinit"} $out/bin/dinit \
             --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
-          makeBinaryWrapper $src/bin/dinit-check $out/bin/dinit-check \
+          makeBinaryWrapper ${getExe' config.package "dinit-check"} $out/bin/dinit-check \
             --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
-          makeBinaryWrapper $src/bin/dinitctl $out/bin/dinitctl
-          makeBinaryWrapper $src/bin/dinit-monitor $out/bin/dinit-monitor
+          ln --symbolic ${getExe' config.package "dinitctl"} $out/bin/dinitctl
+          ln --symbolic ${getExe' config.package "dinit-monitor"} $out/bin/dinit-monitor
         '';
-    };
+
     containerWrapper = pkgs.buildEnv {
       name = "containerWrapper";
       meta.mainProgram = "dinit";
@@ -290,9 +305,11 @@ in
               mkdir --parents /var/log
               rsync --archive ${config.internal.services-dir}/ /run/services
 
-              ${lib.optionalString config.users.enable (lib.getExe config.internal.usersInstallScript)}
+              ${optionalString (config.internal.usersInstallScript != null) (
+                getExe config.internal.usersInstallScript
+              )}
 
-              exec ${lib.getExe' config.package "dinit"} \
+              exec ${getExe' config.package "dinit"} \
                 ${config.internal.envfileArg} \
                 --services-dir /run/services \
                 --container \
