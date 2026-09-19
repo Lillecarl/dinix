@@ -61,6 +61,15 @@ impl fmt::Display for ParseError {
 ///
 /// A `-` for uid or gid leaves that owner alone.
 pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
+    parse_with(input, &|name| std::env::var(name).ok())
+}
+
+/// `parse`, reading variables through `lookup` rather than the environment, so
+/// that a test does not depend on what is set around it.
+pub fn parse_with(
+    input: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<Step>, ParseError> {
     let mut steps = Vec::new();
 
     for (index, raw) in input.lines().enumerate() {
@@ -76,6 +85,14 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
             message,
         };
 
+        // Paths carry dinit's own substitution syntax, so that one spec serves
+        // a container and an uncontained run alike. See expand.rs.
+        let path = |field: &str| {
+            crate::expand::expand(field, lookup)
+                .map(PathBuf::from)
+                .map_err(|error| fail(error.message))
+        };
+
         match fields[0] {
             "dir" => {
                 if fields.len() != 5 {
@@ -88,7 +105,7 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
                     return Err(fail("empty path".to_string()));
                 }
                 steps.push(Step::Dir {
-                    path: PathBuf::from(fields[1]),
+                    path: path(fields[1])?,
                     mode: u32::from_str_radix(fields[2], 8)
                         .map_err(|_| fail(format!("mode {:?} is not octal", fields[2])))?,
                     uid: parse_id(fields[3]).map_err(fail)?,
@@ -106,7 +123,7 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
                     return Err(fail("empty path".to_string()));
                 }
                 steps.push(Step::MustExist {
-                    path: PathBuf::from(fields[1]),
+                    path: path(fields[1])?,
                     kind: match fields[2] {
                         "any" => Kind::Any,
                         "dir" => Kind::Dir,

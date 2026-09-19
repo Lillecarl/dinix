@@ -10,6 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::ExitCode;
 
+mod expand;
 mod spec;
 
 use spec::{Kind, Step};
@@ -60,11 +61,12 @@ fn owner_matches(
     want_uid: Option<u32>,
     want_gid: Option<u32>,
 ) -> bool {
-    want_uid.map_or(true, |wanted| current_uid == wanted)
-        && want_gid.map_or(true, |wanted| current_gid == wanted)
+    want_uid.is_none_or(|wanted| current_uid == wanted)
+        && want_gid.is_none_or(|wanted| current_gid == wanted)
 }
 
-fn apply(step: &Step) -> Result<(), String> {    match step {
+fn apply(step: &Step) -> Result<(), String> {
+    match step {
         Step::Dir {
             path,
             mode,
@@ -91,22 +93,25 @@ fn apply(step: &Step) -> Result<(), String> {    match step {
                 return Err(format!("{shown} exists and is not a directory"));
             }
 
-            fs::set_permissions(path, fs::Permissions::from_mode(*mode))
-                .map_err(|error| format!("setting mode on {shown}: {error}"))?;
+            let current =
+                fs::metadata(path).map_err(|error| format!("checking {shown}: {error}"))?;
 
-            if uid.is_some() || gid.is_some() {
-                let current = fs::metadata(path)
-                    .map_err(|error| format!("checking owner on {shown}: {error}"))?;
-                // A chown that would change nothing is skipped rather than
-                // attempted. A non-root init cannot chown at all — not even
-                // to the owner the path already has, which the kernel still
-                // refuses — so attempting it would fail a step that is
-                // already satisfied. Anything else is still an error below.
-                if !owner_matches(current.uid(), current.gid(), *uid, *gid) {
-                    std::os::unix::fs::chown(path, *uid, *gid).map_err(|error| {
-                        format!("setting owner on {shown}: {error} (only root may do this)")
-                    })?;
-                }
+            // A chmod and a chown that would change nothing are both skipped
+            // rather than attempted, for the same reason: only the owner may
+            // chmod and only root may chown, so on a directory that already
+            // holds what the spec asks for, attempting either fails a step
+            // that is already satisfied. That is the ordinary case for a
+            // mounted volume an unprivileged service owns. Anything the spec
+            // actually asks to change is still an error when it cannot.
+            if current.permissions().mode() & 0o7777 != *mode {
+                fs::set_permissions(path, fs::Permissions::from_mode(*mode))
+                    .map_err(|error| format!("setting mode on {shown}: {error}"))?;
+            }
+
+            if !owner_matches(current.uid(), current.gid(), *uid, *gid) {
+                std::os::unix::fs::chown(path, *uid, *gid).map_err(|error| {
+                    format!("setting owner on {shown}: {error} (only root may do this)")
+                })?;
             }
 
             Ok(())
