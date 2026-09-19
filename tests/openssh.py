@@ -180,12 +180,29 @@ async def test(vms: Machines) -> None:
     buffered = await node.succeed(
         f"podman exec {NAME} {settings['dinitctl']} catlog chatty 2>&1", timeout=120
     )
-    if MARKER not in buffered:
+    if f"DINIX_MARKER={MARKER}" not in buffered:
         raise MachineError(
             f"[{node.name}] the buffer holds no output either, so it was "
-            f"discarded rather than kept:\n{buffered}"
+            f"discarded rather than kept -- or dinit's env-file never reached "
+            f"the service:\n{buffered}"
         )
     print("[test] buffered output stayed out of the stream and in the buffer", flush=True)
+
+    # The CA bundle reaches a service by environment, which is the whole point
+    # of naming it that way: no mount, and no writable filesystem.
+    if f"SSL_CERT_FILE={settings['caBundle']}" not in buffered:
+        raise MachineError(
+            f"[{node.name}] no service sees SSL_CERT_FILE={settings['caBundle']}, "
+            f"so a program falling back to a compiled-in path finds no "
+            f"certificates:\n{buffered}"
+        )
+    exists = await ssh(node, settings, f"test -r {settings['caBundle']}; echo $?")
+    if last_line(exists) != "0":
+        raise MachineError(
+            f"[{node.name}] SSL_CERT_FILE names {settings['caBundle']}, which the "
+            f"container cannot read"
+        )
+    print("[test] every service is told where the CA bundle is, and it is there", flush=True)
 
     try:
         who = await ssh(node, settings, "id -u")

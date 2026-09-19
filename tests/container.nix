@@ -36,12 +36,22 @@
   # chowned.
   dirs."/data/logs".mode = "0750";
 
+  caCertificates.enable = true;
+
+  # Set here rather than printed by the service, because dinit execs a command
+  # directly with no shell and would pass "$MARKER" through unexpanded.
+  env-file.variables.DINIX_MARKER = "dinix-buffer-marker";
+
   # Output that must not reach the collected stream. A container runtime
   # collects what PID 1 writes and nothing else, so a service too chatty for
   # that stream goes to a ring buffer instead, readable with dinitctl catlog.
+  #
+  # It prints its environment, so one service answers three questions: whether
+  # the buffer keeps the output, whether the collected stream stays clear of
+  # it, and whether dinit's own env-file reaches a service at all.
   services.chatty = {
     type = "scripted";
-    command = "${pkgs.busybox}/bin/echo dinix-buffer-marker";
+    command = "${pkgs.busybox}/bin/env";
     dinix.log = "buffer";
     dinix.critical = false;
   };

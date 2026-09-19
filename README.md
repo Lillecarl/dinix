@@ -311,6 +311,28 @@ calls `getpwnam` on the login name and reports `invalid user` when it finds
 nothing, which names neither the uid nor the file. dinix writes root and nobody
 and no one else.
 
+## CA certificates
+
+A container built from a Nix closure has no `/etc/ssl`. A program that falls
+back to a compiled-in path finds nothing there and reports a certificate error
+rather than a missing file, which sends the reader looking in the wrong place.
+
+`caCertificates.enable` names the bundle to every service instead:
+
+```nix
+caCertificates.enable = true;
+```
+
+That puts `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
+`GIT_SSL_CAINFO` in dinit's own environment file, so every service gets them.
+No mount, no writable filesystem, and nothing enters the closure until the
+option is on. `caCertificates.variables` takes more names — `REQUESTS_CA_BUNDLE`
+for Python, say.
+
+`caCertificates.file` is the bundle itself, for the program that insists on a
+path and offers no way to be told. Mount that one file; the others need
+nothing.
+
 ## One store path, or several
 
 Everything dinix generates goes into a single store path, `configDir`:

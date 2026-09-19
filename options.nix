@@ -454,6 +454,7 @@ let
 in
 {
   imports = [
+    ./cacert.nix
     ./openssh.nix
     ./users.nix
   ];
