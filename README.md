@@ -196,11 +196,10 @@ start `dinix-init` and the critical services together.
 
 ### Users
 
-`users.files` is a store path holding `etc/passwd`, `etc/group`, `etc/shadow`,
-`etc/nsswitch.conf` and an empty `var/empty`, as real files rather than
-symlinks. Mount those into a container one file at a time: a volume over `/etc`
-hides the `/etc/hosts` and `/etc/resolv.conf` the runtime puts there and takes
-out name resolution.
+`users.files` is a store path holding `etc/passwd`, `etc/group`, `etc/shadow`
+and `etc/nsswitch.conf`, as real files rather than symlinks. Mount those into a
+container one file at a time: a volume over `/etc` hides the `/etc/hosts` and
+`/etc/resolv.conf` the runtime puts there and takes out name resolution.
 
 **Every shadow entry is locked and there is no option to set a password hash.**
 Nix normalises store permissions to world-readable, so a hash here would be a
@@ -214,6 +213,76 @@ missing from passwd, so the content matters even where nothing reads the file.
 startup instead. It is off by default, and turning it on makes
 `containerWrapper` a shell script with rsync and coreutils in its closure.
 
+## OpenSSH
+
+`openssh.enable` renders `sshd_config`, adds an `sshd` service, and supplies
+the three things sshd needs from the system around it. It is the first service
+dinix owns, so the options sit beside `users` rather than under `services`,
+which holds dinit service descriptions.
+
+```nix
+openssh = {
+  enable = true;
+  hostKeys = [ "/keys/ssh_host_ed25519_key" ];
+  settings.PermitRootLogin = "prohibit-password";
+};
+services.sshd.dinix.critical = true;
+```
+
+`settings` is one attribute per `sshd_config` keyword. A keyword that may
+repeat, `HostKey` and `Port` among them, takes a list and becomes one line for
+each element.
+
+**Host keys are mounted, not built.** A key is a secret, and everything in the
+Nix store is readable by every process on the host. Each path in `hostKeys`
+also becomes a `mustExist` check, so a volume that is not mounted stops the
+container with the path in the message.
+
+**The mode has to be 0400 or 0600.** sshd checks the mode of a private key
+only when the file belongs to the user running sshd — which in a container is
+root, and so is the file. A Kubernetes secret arrives 0644 unless
+`defaultMode` says otherwise, and a store path is 0444. Both fail: sshd prints
+`UNPROTECTED PRIVATE KEY FILE`, ignores the key, and then exits because it has
+none. Measured against OpenSSH 10.5p1, `authfile.c`.
+
+`openssh.generateHostKeys.enable` makes them at startup instead, with an
+`sshd-keygen` service that `sshd` depends on. `ssh-keygen -A` makes a key of
+every type that has none, so it is one exec with no shell and it is safe to
+run again. Two things to know: `-f` takes a **prefix**, not a directory, so
+keys land in `<root>/etc/ssh/`; and on a volume that keeps nothing the host
+identity changes at every restart, which a client that remembers the old one
+refuses to connect to.
+
+dinix also writes the `sshd` account into the user database and makes
+`/var/empty` mode 0755 owned by root. Both are conditions sshd checks itself
+and exits over: the privilege separation user name is compiled in, and the
+privilege separation directory must not be writable by group or others. A
+Kubernetes `emptyDir` and a `podman --tmpfs` both arrive 1777, so the mode is
+set rather than assumed.
+
+`services.sshd.dinix.critical` defaults to `false`, which starts sshd and lets
+it crash and restart without taking the container down. Set it to `true` where
+sshd is the reason the container exists.
+
+### sshd without root
+
+`openssh.rootless = true` is the shape for a container that must not run as
+root. sshd decides this by its own uid rather than by configuration, so the
+option tells dinix which shape to render. Measured against OpenSSH 10.5p1 by
+running both:
+
+- **A rootless sshd serves one account: its own.** It cannot change uid, so it
+  accepts the login and then exits with `Failed to set uids`. The client sees
+  the connection reset.
+- It needs no privilege separation, so dinix writes no `sshd` account and does
+  not make `/var/empty`. sshd asks for neither when its uid is not 0.
+- **It cannot bind below port 1024.** The default port becomes 2222, and dinix
+  refuses a privileged port rather than letting sshd fail at startup.
+- A host key it does not own escapes the mode check above, because sshd only
+  checks a key belonging to the user running it. A root-owned store path
+  therefore loads. That is not a reason to put a key in the store, which
+  publishes it to every process on the host.
+
 ## One store path, or several
 
 Everything dinix generates goes into a single store path, `configDir`:
@@ -223,7 +292,7 @@ services/<name>   service descriptions
 env/<name>        per-service environment files
 env-file          the environment file dinit itself reads
 init.spec         the directories and checks for dinix-init
-etc/              passwd, group, shadow, nsswitch.conf
+etc/              passwd, group, shadow, nsswitch.conf, sshd_config
 ```
 
 A container image built from a Nix closure usually gets a layer per store path,

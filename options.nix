@@ -454,6 +454,7 @@ let
 in
 {
   imports = [
+    ./openssh.nix
     ./users.nix
   ];
 
@@ -650,8 +651,7 @@ in
         env/<name>        per-service environment files
         env-file          the environment file dinit itself reads
         init.spec         the directories and checks for dinix-init
-        etc/              passwd, group, shadow, nsswitch.conf
-        var/empty         for daemons that want it
+        etc/              passwd, group, shadow, nsswitch.conf, sshd_config
         ```
 
         One path rather than several because a container image built from a Nix
@@ -801,7 +801,11 @@ in
           };
           etcFiles = mkOption {
             type = types.attrsOf types.str;
-            description = "The user database, as relative path to content.";
+            description = ''
+              Files under `etc/` that dinix renders, as relative path to
+              content: the user database, and any configuration a built-in
+              service writes for the program it runs.
+            '';
           };
           envfileArg = mkOption {
             type = types.str;
