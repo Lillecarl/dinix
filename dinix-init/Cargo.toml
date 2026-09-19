@@ -1,0 +1,16 @@
+[package]
+name = "dinix-init"
+version = "0.1.0"
+edition = "2021"
+
+# No dependencies, deliberately. Everything here is in std, which keeps the
+# binary small, the Nix build hermetic (no crates.io fetch, no cargoHash) and
+# the parsing surface to the one format in src/spec.rs.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
