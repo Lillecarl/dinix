@@ -303,7 +303,30 @@ in
     package = mkOption {
       type = types.package;
       default = pkgs.dinit;
-      description = "The dinit package to configure, wrap and verify against.";
+      description = ''
+        The dinit package to configure, wrap and verify against.
+
+        {option}`trimShutdownTools` acts on this. What the wrappers actually
+        use is {option}`internal.dinitPackage`.
+      '';
+    };
+
+    trimShutdownTools = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether to drop `shutdown`, `halt`, `poweroff`, `reboot` and
+        `soft-reboot` from {option}`package`.
+
+        Those five call `/bin/umount` and `/sbin/swapoff`, which nixpkgs
+        rewrites to point at util-linux. That puts five util-linux outputs in
+        the closure of every container, `mount` and `login` among them. dinit
+        reaches none of it in container mode: `--container` makes it exit
+        instead of running a shutdown program.
+
+        Measured on a configuration with one service: 57.9 MiB over 17 store
+        paths with the tools, 46.6 MiB over 9 without.
+      '';
     };
 
     env-file = mkOption {
@@ -403,6 +426,10 @@ in
             type = types.package;
             description = "Directory holding one rendered file per service.";
           };
+          dinitPackage = mkOption {
+            type = types.package;
+            description = "package, with the shutdown tools removed if asked for.";
+          };
           envfileArg = mkOption {
             type = types.str;
             description = "The --env-file argument, or the empty string.";
@@ -456,6 +483,18 @@ in
       };
 
     internal = {
+      dinitPackage =
+        if !config.trimShutdownTools then
+          config.package
+        else
+          config.package.overrideAttrs (old: {
+            postInstall = (old.postInstall or "") + ''
+              for tool in shutdown halt poweroff reboot soft-reboot; do
+                rm --force "$out/bin/$tool" "$out/share/man/man8/$tool.8.gz"
+              done
+            '';
+          });
+
       envfileArg = optionalString (config.env-file != null) "--env-file ${config.env-file}";
 
       checkArgs = lib.concatStringsSep " " (
@@ -482,7 +521,7 @@ in
             serviceName: service:
             "cp ${pkgs.writeText "dinix-service-${serviceName}" service.text} $out/${serviceName}"
           ) config.services)
-          ++ lib.optional config.verifyConfig "${getExe' config.package "dinit-check"} ${config.internal.envfileArg} --services-dir $out"
+          ++ lib.optional config.verifyConfig "${getExe' config.internal.dinitPackage "dinit-check"} ${config.internal.envfileArg} --services-dir $out"
         )
       );
     };
@@ -495,12 +534,12 @@ in
         }
         ''
           mkdir --parents $out/bin
-          makeBinaryWrapper ${getExe' config.package "dinit"} $out/bin/dinit \
+          makeBinaryWrapper ${getExe' config.internal.dinitPackage "dinit"} $out/bin/dinit \
             --add-flags "${config.internal.dinitArgs}"
-          makeBinaryWrapper ${getExe' config.package "dinit-check"} $out/bin/dinit-check \
+          makeBinaryWrapper ${getExe' config.internal.dinitPackage "dinit-check"} $out/bin/dinit-check \
             --add-flags "${config.internal.checkArgs}"
-          ln --symbolic ${getExe' config.package "dinitctl"} $out/bin/dinitctl
-          ln --symbolic ${getExe' config.package "dinit-monitor"} $out/bin/dinit-monitor
+          ln --symbolic ${getExe' config.internal.dinitPackage "dinitctl"} $out/bin/dinitctl
+          ln --symbolic ${getExe' config.internal.dinitPackage "dinit-monitor"} $out/bin/dinit-monitor
         '';
 
     containerWrapper =
@@ -511,7 +550,7 @@ in
         entrypoint =
           if config.internal.usersInstallScript == null then
             ''
-              makeBinaryWrapper ${getExe' config.package "dinit"} $out/bin/dinit \
+              makeBinaryWrapper ${getExe' config.internal.dinitPackage "dinit"} $out/bin/dinit \
                 --add-flags "${config.internal.dinitArgs} ${config.internal.containerArgs}"
             ''
           else
@@ -520,7 +559,7 @@ in
               #! ${pkgs.runtimeShell}
               set -euo pipefail
               ${getExe config.internal.usersInstallScript}
-              exec ${getExe' config.package "dinit"} ${config.internal.dinitArgs} ${config.internal.containerArgs} "\$@"
+              exec ${getExe' config.internal.dinitPackage "dinit"} ${config.internal.dinitArgs} ${config.internal.containerArgs} "\$@"
               EOF
               chmod +x $out/bin/dinit
             '';
@@ -536,9 +575,9 @@ in
           # dinitctl reads DINIT_SOCKET_PATH, so these work from an absolute
           # store path with no PATH and no terminal, which is all a debugging
           # exec into a scratch image has.
-          makeBinaryWrapper ${getExe' config.package "dinitctl"} $out/bin/dinitctl \
+          makeBinaryWrapper ${getExe' config.internal.dinitPackage "dinitctl"} $out/bin/dinitctl \
             --set-default DINIT_SOCKET_PATH ${config.socketPath}
-          makeBinaryWrapper ${getExe' config.package "dinit-monitor"} $out/bin/dinit-monitor \
+          makeBinaryWrapper ${getExe' config.internal.dinitPackage "dinit-monitor"} $out/bin/dinit-monitor \
             --set-default DINIT_SOCKET_PATH ${config.socketPath}
         '';
   };
