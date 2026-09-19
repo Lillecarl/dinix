@@ -68,11 +68,13 @@ in
     };
     services.nginx = {
       type = "process";
-      command =
-        pkgs.writeShellApplication "nginx-launcher" { } # bash
+      command = pkgs.writeShellApplication {
+        name = "nginx-launcher";
+        text = # bash
           ''
-            ${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr
+            exec ${lib.getExe pkgs.nginx} -c ${nginxConfig} -e /dev/stderr
           '';
+      };
       restart = true;
       options = [
         "shares-console"
