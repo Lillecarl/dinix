@@ -6,7 +6,7 @@ from running dinit on a workstation.  This runs the real thing: a
 nix2container image whose entrypoint is `containerWrapper`, under podman, in a
 guest that is not this machine.
 
-Five claims, in the order they can fail:
+Six claims, in the order they can fail:
 
     init      dinix-init makes the directories a service needs, on mounts
               that arrive 1777
@@ -18,6 +18,8 @@ Five claims, in the order they can fail:
     privsep   /var/empty ends up 0755, which is the mode sshd refuses to
               start without
     critical  stopping a critical service stops the container
+    mustExist the same image, run without the one volume it asks for,
+              stops and names the path
 
 The container is given the shape Kubernetes gives one: a read-only root
 filesystem, tmpfs where something must be written, and the user database
@@ -38,21 +40,22 @@ NAME = "dinix"
 ETC = ["passwd", "group", "shadow", "nsswitch.conf"]
 
 
-def run_args(settings: dict) -> str:
+def run_args(settings: dict, name: str = NAME, tmpfs: list[str] | None = None) -> str:
     mounts = [
-        f"--volume {settings['configDir']}/etc/{name}:/etc/{name}:ro" for name in ETC
+        f"--volume {settings['configDir']}/etc/{etc}:/etc/{etc}:ro" for etc in ETC
     ]
     # podman gives a tmpfs mode 1777, which is what makes these worth mounting:
     # dinix-init is the thing that turns them into the modes sshd insists on.
-    tmpfs = [f"--tmpfs {path}" for path in settings["tmpfs"]]
+    paths = settings["tmpfs"] if tmpfs is None else tmpfs
+    tmpfs_args = [f"--tmpfs {path}" for path in paths]
     return " ".join(
         [
-            f"--name {NAME}",
+            f"--name {name}",
             # The guest's own network. netavark and nftables are not what this
             # test is about, and the container's port is not 22.
             "--network host",
             "--read-only",
-            *tmpfs,
+            *tmpfs_args,
             *mounts,
             # Empty when the container runs as root, which is podman's default.
             settings["podmanUser"] and f"--user {settings['podmanUser']}",
@@ -181,7 +184,13 @@ async def test(vms: Machines) -> None:
     # --force because boot depends on sshd, and dinitctl refuses to stop a
     # service with hard dependents without it. It goes after the command, not
     # before: dinitctl takes general options first and command options second.
-    await node.succeed(
+    #
+    # execute and not succeed: this command asks the container to go away, and
+    # when it does the exec'd dinitctl goes with it. Measured at exit 137 --
+    # killed -- as often as at 0, which is a race and not a result. The
+    # assertion is the wait below; a dinitctl that failed for a real reason
+    # leaves the container running and times out there.
+    await node.execute(
         f"podman exec {NAME} {settings['dinitctl']} stop --force sshd 2>&1", timeout=120
     )
     status = (await node.succeed(f"podman wait --condition exited {NAME}", timeout=120)).strip()
@@ -192,6 +201,24 @@ async def test(vms: Machines) -> None:
     print("[test] stopping the critical service stopped the container", flush=True)
 
     await node.succeed(f"podman rm --force {NAME}")
+
+    # The same image, with the one volume mustExist asks for taken away. An
+    # unmounted volume otherwise surfaces as whichever service touches the path
+    # first, failing in its own vocabulary; this is the message that names the
+    # path instead. In the foreground, because dinit always exits 0 and so the
+    # exit code says nothing -- what is being checked is what it said.
+    without = [path for path in settings["tmpfs"] if path != settings["mustExist"]]
+    _, refused = await node.execute(
+        f"podman run --rm {run_args(settings, 'dinix-nomount', without)}"
+        f" {settings['imageRef']} 2>&1",
+        timeout=300,
+    )
+    if f"{settings['mustExist']} must exist and does not" not in refused:
+        raise MachineError(
+            f"[{node.name}] a container missing {settings['mustExist']} did not say "
+            f"so and stop:\n{refused}"
+        )
+    print(f"[test] a container without {settings['mustExist']} stopped and named it", flush=True)
 
 
 run_test(test)

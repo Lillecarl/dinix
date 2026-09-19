@@ -11,8 +11,11 @@
 # it? user-mode-nixos boots a guest, podman runs the image in it, and the test
 # asserts against the running container.
 #
-#   nix build --file ./dev.nix containerTest        # inside a build sandbox
-#   nix run   --file ./dev.nix containerTest.run    # outside it, with a network
+#   nix build --file ./dev.nix containerTest rootlessTest   # in a build sandbox
+#   nix run   --file ./dev.nix containerTest.run            # outside it
+#
+# Two of them, because sshd separates privileges or not according to its own
+# uid, and dinix renders a different configuration for each.
 #
 {
   pkgs ? import <nixpkgs> { },
@@ -147,8 +150,14 @@ let
         port = dinix.config.openssh.settings.Port;
         # /run holds dinit's control socket and the generated host keys.
         # /var/empty is sshd's privilege separation directory, which a rootless
-        # sshd never looks at.
-        tmpfs = [ "/run" ] ++ lib.optional (uid == 0) "/var/empty";
+        # sshd never looks at. /data is the volume mustExist asks for, and the
+        # test runs the container a second time without it.
+        mustExist = "/data";
+        tmpfs = [
+          "/run"
+          "/data"
+        ]
+        ++ lib.optional (uid == 0) "/var/empty";
       };
     };
 

@@ -24,6 +24,11 @@
     };
   };
 
+  # A volume the container cannot do without. The test runs the container both
+  # with it and without it: mounted, nothing happens, and missing, the
+  # container stops before sshd starts and says which path was not there.
+  mustExist."/data".kind = "dir";
+
   # sshd is the reason this container exists, so stopping it must stop the
   # container. The test checks that.
   services.sshd.dinix.critical = true;
