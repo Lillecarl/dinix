@@ -150,11 +150,13 @@ in
       type = lib.types.package;
       readOnly = true;
       description = ''
-        The user database as a store path, holding `etc/passwd`, `etc/group`,
-        `etc/shadow`, `etc/nsswitch.conf` and an empty `var/empty`.
+        The store path holding the user database, as `etc/passwd`, `etc/group`,
+        `etc/shadow` and `etc/nsswitch.conf`.
 
-        Mount these into a container one file at a time. A whole-directory
-        mount over /etc hides what the runtime puts there.
+        This is {option}`configDir`, which carries the rest of the generated
+        configuration as well. Mount the one file you want out of it, a file at
+        a time: a whole-directory mount over /etc hides what the runtime puts
+        there.
 
         A process that calls `getpwuid` on its own uid fails outright when the
         uid is absent from passwd, so the content matters even where nothing
@@ -169,7 +171,11 @@ in
   };
 
   config = {
-    users.files =
+    users.files = config.configDir;
+
+    # Nix normalises store permissions to r--r--r--, so shadow cannot be made
+    # unreadable. That is why it never holds a hash.
+    internal.etcFiles =
       let
         users = lib.pipe config.users.users [
           lib.attrValues
@@ -180,30 +186,12 @@ in
           (lib.sort (x: y: x.gid < y.gid))
         ];
       in
-      # Real files rather than a symlinkJoin. These get mounted one at a time,
-      # and a bind mount of a symlink is not the file it points at.
-      pkgs.runCommand "usergrpnss"
-        {
-          passAsFile = [
-            "passwd"
-            "group"
-            "shadow"
-            "nsswitch"
-          ];
-          passwd = lib.concatLines (map (user: user.text) users);
-          group = lib.concatLines (map (group: group.text) groups);
-          shadow = lib.concatLines (map (user: user.shadowText) users);
-          nsswitch = "hosts: files dns\n";
-        }
-        ''
-          mkdir --parents $out/etc $out/var/empty
-          cp "$passwdPath" $out/etc/passwd
-          cp "$groupPath" $out/etc/group
-          cp "$shadowPath" $out/etc/shadow
-          cp "$nsswitchPath" $out/etc/nsswitch.conf
-          # Nix normalises store permissions to r--r--r--, so shadow cannot be
-          # made unreadable here. That is why it never holds a hash.
-        '';
+      {
+        "etc/passwd" = lib.concatLines (map (user: user.text) users);
+        "etc/group" = lib.concatLines (map (group: group.text) groups);
+        "etc/shadow" = lib.concatLines (map (user: user.shadowText) users);
+        "etc/nsswitch.conf" = "hosts: files dns\n";
+      };
 
     internal.usersInstallScript = lib.mkIf config.users.installAtRuntime (
       lib.throwIf (!config.users.enable)

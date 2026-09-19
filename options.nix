@@ -65,6 +65,50 @@ let
 
   mkDinitListOption = attrs: mkDinitOption ({ type = dinixListType; } // attrs);
 
+  /**
+    Write an attribute set of relative path to text as one store path.
+
+    Contents go through `passAsFile`, so a large service tree does not hit the
+    command line length limit. `extra` runs once every file is in place, which
+    is where the dinit-check goes: a relative `env-file` only resolves once the
+    layout is finished.
+  */
+  writeFiles =
+    name: files: extra:
+    let
+      indexed = lib.imap0 (index: entry: entry // { inherit index; }) (
+        lib.mapAttrsToList (path: text: { inherit path text; }) files
+      );
+      # "$file" then the index keeps the dollar away from a brace, which would
+      # otherwise read as Nix interpolation and leave a literal $$ for the
+      # shell to expand into its own pid.
+      varOf = entry: "file${toString entry.index}";
+    in
+    pkgs.runCommand name
+      (
+        {
+          passAsFile = map varOf indexed;
+        }
+        // lib.listToAttrs (map (entry: lib.nameValuePair (varOf entry) entry.text) indexed)
+      )
+      (
+        concatLines (
+          (map (entry: ''
+            mkdir --parents "$out/$(dirname ${lib.escapeShellArg entry.path})"
+            cp "$file${toString entry.index}Path" "$out/${entry.path}"
+          '') indexed)
+          ++ [ extra ]
+        )
+      );
+
+  # Runs inside the derivation being built, against the layout there, because
+  # a relative env-file resolves against the directory holding the service.
+  checkCommand =
+    servicesSubdir:
+    optionalString config.verifyConfig ''
+      ${getExe' config.internal.dinitPackage "dinit-check"} --services-dir "$out/${servicesSubdir}"
+    '';
+
   # getExe guesses <out>/bin/<pname> when meta.mainProgram is missing, which is
   # wrong for a single-file derivation such as writeShellScript. Those already
   # point at the executable, so use them as they are.
@@ -113,11 +157,6 @@ let
           description = "Rendered env-file text";
           internal = true;
         };
-        file = mkOption {
-          type = types.package;
-          description = "Rendered env-file";
-          internal = true;
-        };
       };
       config = {
         enable = mkDefault (
@@ -132,7 +171,6 @@ let
           } config.variables}
           ${concatLines (map (x: "!import ${x}") config.import)}
         '';
-        file = pkgs.writeText "env-file" config.text;
       };
     }
   );
@@ -158,11 +196,15 @@ let
         };
         env-file = mkDinitOption {
           type = types.nullOr (types.either types.path envfileType);
-          apply = value: if value.enable or false then value.file else value;
         };
         text = mkDinitOption {
           type = types.str;
           internal = true;
+        };
+        envFileText = mkOption {
+          type = types.nullOr types.str;
+          internal = true;
+          description = "Rendered env-file text, when env-file is a set rather than a path.";
         };
 
         # dinix writes to these six itself. A freeform attribute cannot hold a
@@ -290,20 +332,41 @@ let
         let
           settings = pipe config [
             attrsToList
-            # text is this attribute, and dinix holds settings dinit never sees.
+            # text and envFileText are this rendering; dinix holds settings
+            # dinit never sees; env-file is rendered below instead, because a
+            # set becomes a file inside configDir and a relative reference.
             (filter (
               opt:
               !(builtins.elem opt.name [
                 "text"
+                "envFileText"
                 "dinix"
+                "env-file"
               ])
               && opt.value != null
             ))
           ];
           # @include and friends are directives, not assignments.
           toKV =
-            name: value:
-            if hasPrefix "@" name then "${name} ${toStringPlus value}" else "${name} = ${toStringPlus value}";
+            settingName: value:
+            if hasPrefix "@" settingName then
+              "${settingName} ${toStringPlus value}"
+            else
+              "${settingName} = ${toStringPlus value}";
+
+          # Consolidated, a description lives in configDir/services, so
+          # ../env/<name> reaches configDir/env/<name>. dinit-service(5): a
+          # relative env-file resolves against the directory holding the
+          # description. Split, each env-file is its own store path.
+          envFileLine =
+            if config.env-file == null then
+              [ ]
+            else if config.envFileText == null then
+              [ "env-file = ${toString config.env-file}" ]
+            else if topConfig.consolidateConfig then
+              [ "env-file = ../env/${name}" ]
+            else
+              [ "env-file = ${pkgs.writeText "env-file-${name}" config.envFileText}" ];
         in
         {
           # Reading a declared sibling is fine; reading a freeform one with
@@ -368,8 +431,12 @@ let
           restart-limit-count = mkDefault (if config.dinix.critical == false then 0 else null);
           restart-delay = mkDefault (if config.dinix.critical == false then 5 else null);
 
+          envFileText =
+            if config.env-file != null && config.env-file.enable or false then config.env-file.text else null;
+
           text = concatLines (
-            (pipe settings [
+            envFileLine
+            ++ (pipe settings [
               (filter (opt: isStringLikePlus opt.value))
               (map (opt: toKV opt.name opt.value))
             ])
@@ -434,7 +501,6 @@ in
 
     env-file = mkOption {
       type = types.nullOr (types.either types.path envfileType);
-      apply = value: if value.enable or false then value.file else value;
       default = null;
       description = ''
         Environment file dinit itself reads, applied to every service. Either a
@@ -555,6 +621,52 @@ in
       '';
     };
 
+    consolidateConfig = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether to put everything dinix generates in one store path
+        ({option}`configDir`) rather than one path per piece.
+
+        On, because a container image built from a Nix closure usually gets a
+        layer per store path, and the six or so paths dinix would otherwise add
+        are six layers holding bytes that all change together. Image formats
+        have a layer ceiling, and these are not worth spending it on.
+
+        Off is the right setting where store paths are not layers, such as a
+        runtime that mounts the closure directly. Then each piece is its own
+        path, and a change to one service does not rebuild the rest.
+      '';
+    };
+
+    configDir = mkOption {
+      type = types.package;
+      readOnly = true;
+      description = ''
+        Every file dinix generates, in one store path.
+
+        ```
+        services/<name>   service descriptions
+        env/<name>        per-service environment files
+        env-file          the environment file dinit itself reads
+        init.spec         the directories and checks for dinix-init
+        etc/              passwd, group, shadow, nsswitch.conf
+        var/empty         for daemons that want it
+        ```
+
+        One path rather than several because a container image built from a Nix
+        closure usually gets a layer per store path. Splitting the same bytes
+        over six paths spends six layers on them, and image formats have a
+        layer ceiling worth saving for things that change independently. These
+        do not: every file here is rewritten whenever any service changes.
+
+        A service description refers to its environment file as `../env/<name>`,
+        which dinit resolves against the directory holding the description.
+        That keeps the reference inside this path instead of pointing at
+        another one.
+      '';
+    };
+
     initPackage = mkOption {
       type = types.package;
       default = pkgs.callPackage ./dinix-init/package.nix { };
@@ -663,17 +775,33 @@ in
     internal = mkOption {
       type = types.submodule {
         options = {
-          services-dir = mkOption {
-            type = types.package;
-            description = "Directory holding one rendered file per service.";
-          };
           dinitPackage = mkOption {
             type = types.package;
             description = "package, with the shutdown tools removed if asked for.";
           };
-          initSpec = mkOption {
-            type = types.package;
-            description = "The dirs, rendered for dinix-init.";
+          initSpecText = mkOption {
+            type = types.str;
+            description = "The checks and dirs, rendered for dinix-init.";
+          };
+          initSpecPath = mkOption {
+            type = types.str;
+            description = "Where that spec ends up.";
+          };
+          envFileText = mkOption {
+            type = types.nullOr types.str;
+            description = "The top-level env-file text, when it is a set rather than a path.";
+          };
+          envFilePath = mkOption {
+            type = types.nullOr types.str;
+            description = "Where dinit's own env-file ends up, or null when there is none.";
+          };
+          servicesDir = mkOption {
+            type = types.str;
+            description = "The directory holding one file per service.";
+          };
+          etcFiles = mkOption {
+            type = types.attrsOf types.str;
+            description = "The user database, as relative path to content.";
           };
           envfileArg = mkOption {
             type = types.str;
@@ -710,7 +838,7 @@ in
   config = {
     services.dinix-init = mkIf needsInit {
       type = "scripted";
-      command = "${getExe config.initPackage} ${config.internal.initSpec}";
+      command = "${getExe config.initPackage} ${config.internal.initSpecPath}";
       dinix.log = "console";
     };
 
@@ -759,36 +887,71 @@ in
             '';
           });
 
-      initSpec = pkgs.writeText "dinix-init.spec" (
-        concatLines (
-          [ "# Generated by dinix. See dinix-init/src/spec.rs." ]
-          # Checks first: a missing mount should be reported before anything is
-          # made on top of it.
-          ++ (lib.mapAttrsToList (
-            _: required:
-            lib.concatStringsSep "\t" [
-              "must-exist"
-              required.path
-              required.kind
-            ]
-          ) config.mustExist)
-          ++ (lib.mapAttrsToList (
-            _: dir:
-            lib.concatStringsSep "\t" [
-              "dir"
-              dir.path
-              dir.mode
-              (if dir.uid == null then "-" else toString dir.uid)
-              (if dir.gid == null then "-" else toString dir.gid)
-            ]
-          ) config.dirs)
-        )
+      initSpecText = concatLines (
+        [ "# Generated by dinix. See dinix-init/src/spec.rs." ]
+        # Checks first: a missing mount should be reported before anything is
+        # made on top of it.
+        ++ (lib.mapAttrsToList (
+          _: required:
+          lib.concatStringsSep "\t" [
+            "must-exist"
+            required.path
+            required.kind
+          ]
+        ) config.mustExist)
+        ++ (lib.mapAttrsToList (
+          _: dir:
+          lib.concatStringsSep "\t" [
+            "dir"
+            dir.path
+            dir.mode
+            (if dir.uid == null then "-" else toString dir.uid)
+            (if dir.gid == null then "-" else toString dir.gid)
+          ]
+        ) config.dirs)
       );
 
-      envfileArg = optionalString (config.env-file != null) "--env-file ${config.env-file}";
+      envFileText =
+        if config.env-file != null && config.env-file.enable or false then config.env-file.text else null;
+
+      # Where each generated file ends up. Consolidated, all of it is inside
+      # configDir; split, each piece is its own store path.
+      envFilePath =
+        if config.env-file == null then
+          null
+        else if config.internal.envFileText == null then
+          toString config.env-file
+        else if config.consolidateConfig then
+          "${config.configDir}/env-file"
+        else
+          toString (pkgs.writeText "env-file" config.internal.envFileText);
+
+      initSpecPath =
+        if config.consolidateConfig then
+          # The dinix-init service description lives in configDir and has to
+          # name a file in configDir, which no Nix expression can do: the path
+          # is not known until the derivation is built. The builder substitutes
+          # this for $out once the files are written.
+          "@configDir@/init.spec"
+        else
+          toString (pkgs.writeText "dinix-init.spec" config.internal.initSpecText);
+
+      servicesDir =
+        if config.consolidateConfig then
+          "${config.configDir}/services"
+        else
+          toString (
+            writeFiles "dinix-services" (lib.mapAttrs' (
+              serviceName: service: lib.nameValuePair serviceName service.text
+            ) config.services) (checkCommand ".")
+          );
+
+      envfileArg = optionalString (
+        config.internal.envFilePath != null
+      ) "--env-file ${config.internal.envFilePath}";
 
       checkArgs = lib.concatStringsSep " " (
-        [ "--services-dir ${config.internal.services-dir}" ]
+        [ "--services-dir ${config.internal.servicesDir}" ]
         ++ lib.optional (config.internal.envfileArg != "") config.internal.envfileArg
       );
 
@@ -804,17 +967,38 @@ in
         "--socket-path ${config.socketPath}"
       ];
 
-      services-dir = pkgs.runCommand "dinix-services" { } (
-        concatLines (
-          [ "mkdir --parents $out" ]
-          ++ (mapAttrsToList (
-            serviceName: service:
-            "cp ${pkgs.writeText "dinix-service-${serviceName}" service.text} $out/${serviceName}"
-          ) config.services)
-          ++ lib.optional config.verifyConfig "${getExe' config.internal.dinitPackage "dinit-check"} ${config.internal.envfileArg} --services-dir $out"
-        )
-      );
     };
+
+    configDir =
+      writeFiles "dinix-config"
+        (
+          (lib.mapAttrs' (
+            serviceName: service: lib.nameValuePair "services/${serviceName}" service.text
+          ) config.services)
+          // (lib.concatMapAttrs (
+            serviceName: service:
+            lib.optionalAttrs (service.envFileText != null) {
+              "env/${serviceName}" = service.envFileText;
+            }
+          ) config.services)
+          // lib.optionalAttrs (config.internal.envFileText != null) {
+            "env-file" = config.internal.envFileText;
+          }
+          // {
+            "init.spec" = config.internal.initSpecText;
+          }
+          // config.internal.etcFiles
+        )
+        (
+          ''
+            # grep exits 1 when nothing matches, which is the ordinary case:
+            # only a service that has to name this very path uses the marker.
+            grep --recursive --files-with-matches --null @configDir@ "$out" \
+              | xargs --null --no-run-if-empty sed --in-place "s|@configDir@|$out|g" \
+              || true
+          ''
+          + checkCommand "services"
+        );
 
     userWrapper =
       pkgs.runCommand "${config.name}-user"

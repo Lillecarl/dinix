@@ -198,6 +198,48 @@ missing from passwd, so the content matters even where nothing reads the file.
 startup instead. It is off by default, and turning it on makes
 `containerWrapper` a shell script with rsync and coreutils in its closure.
 
+## One store path, or several
+
+Everything dinix generates goes into a single store path, `configDir`:
+
+```
+services/<name>   service descriptions
+env/<name>        per-service environment files
+env-file          the environment file dinit itself reads
+init.spec         the directories and checks for dinix-init
+etc/              passwd, group, shadow, nsswitch.conf
+```
+
+A container image built from a Nix closure usually gets a layer per store path,
+and image formats have a layer ceiling. The pieces above all change together,
+so spending several layers on them buys nothing. Measured with nix2container on
+a configuration with two services, two per-service environment files, a
+directory and a check:
+
+| | layers | size |
+| --- | --- | --- |
+| `consolidateConfig = true` | **14** | 51 MB |
+| `consolidateConfig = false` | 18 | 51 MB |
+
+Same bytes, four fewer layers.
+
+A service refers to its environment file as `../env/<name>`, which dinit
+resolves against the directory holding the description, so the reference stays
+inside the path. The one file that has to name the path it lives in, the
+`dinix-init` service description, gets it substituted at build time — no Nix
+expression can know a store path before it is built.
+
+Set `consolidateConfig = false` where store paths are not layers, such as a
+runtime that mounts the closure directly. Each piece is then its own path, and
+changing one service does not rebuild the rest.
+
+`dev.nix` builds both images and reports on them. It is not imported by
+`default.nix`, so nix2container never reaches a consumer's closure:
+
+```
+nix run --file ./dev.nix report
+```
+
 ## Outputs
 
 `containerWrapper` is dinit as PID 1, reading its services straight from the
