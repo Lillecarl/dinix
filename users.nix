@@ -34,7 +34,7 @@ let
         shell = lib.mkOption {
           type = lib.types.either lib.types.path lib.types.package;
           default = "/bin/sh";
-          apply = (x: if lib.isDerivation x then lib.getExe x else x);
+          apply = x: if lib.isDerivation x then lib.getExe x else x;
         };
         text = lib.mkOption {
           type = lib.types.str;
