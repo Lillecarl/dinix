@@ -87,15 +87,51 @@ pod deletion does not wait out its grace period.
 
 ### Logging
 
-`dinit`'s default `log-type` is `none`: a service's output is discarded, not
-written anywhere. dinix therefore sets `shares-console` on process-like
-services, which connects them to dinit's own standard output. Output passes
-through unchanged, with no prefix, so JSON log lines stay parseable. Turn it
-off per service with `dinix.console = false`.
+A container runtime collects the output of PID 1 and nothing else, so each
+service has to say whether it joins that stream. `dinix.log` decides:
+
+| value | renders | for |
+| --- | --- | --- |
+| `console` | `options: shares-console` | reaching the log collector. The default for process-like services. |
+| `buffer` | `log-type = buffer` | a service too chatty for that stream |
+| `file` | `log-type = file` | an application that insists on its own file. The default when `logfile` is set. |
+| `none` | nothing | discarding the output, which is dinit's own default |
+
+Output on the console passes through unchanged. dinit adds no prefix, so a
+service emitting JSON lines stays parseable.
+
+**`buffer` is the only destination that needs no rotation.** It keeps the last
+`logBufferSize` bytes in memory, readable with `dinitctl catlog <service>`, and
+a ring buffer cannot grow without bound. dinit's own default size is 4096
+bytes, which holds almost nothing; dinix uses 256 KiB.
+
+**dinit does not rotate `logfile`, and it grows without bound.** Whatever owns
+that volume owns the rotation. Prefer talking the application into writing to
+standard error — most have a switch for it, and finding it beats building
+machinery.
+
+Set `dinix.log` rather than `log-type`: `log-type` follows from it, and
+dinit ignores a log type on a service that shares the console.
 
 `quiet` drops dinit's own `[  OK  ]` status lines, which otherwise share the
 stream with service output. `consoleLevel` defaults to `warn`, which keeps the
 line naming the service that brought the container down.
+
+### Services that write their own log files
+
+Some applications keep their own files and cannot be pointed at standard error.
+`dinix.logDir` declares that, without changing what dinit does:
+
+```nix
+services.phd = {
+  dinix.logDir = "/var/lib/phabricator/phd/log";
+  dinix.logDirSize = "64Mi";
+};
+```
+
+Everything so declared appears in the top-level `logDirs`, keyed by service.
+Read it when building the container so the volume and its limit come from the
+service definition, instead of a second list kept in step by hand.
 
 ### The control socket
 

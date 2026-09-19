@@ -6,6 +6,10 @@
 }:
 
 let
+  # The service submodule shadows `config` with its own. This keeps the
+  # top-level one reachable from inside it.
+  topConfig = config;
+
   inherit (lib)
     attrNames
     attrsToList
@@ -167,6 +171,9 @@ let
         restart = mkDinitOption { };
         restart-delay = mkDinitOption { };
         restart-limit-count = mkDinitOption { };
+        log-type = mkDinitOption { };
+        logfile = mkDinitOption { };
+        log-buffer-size = mkDinitOption { };
 
         dinix = mkOption {
           type = types.submodule {
@@ -194,21 +201,70 @@ let
                   exits. Measured against dinit 0.22.1.
                 '';
               };
-              console = mkOption {
-                type = types.bool;
+              log = mkOption {
+                type = types.enum [
+                  "console"
+                  "buffer"
+                  "file"
+                  "none"
+                ];
                 description = ''
-                  Whether to give this service the `shares-console` option, so
-                  its output reaches the console dinit itself writes to.
+                  Where this service's output goes.
 
-                  dinit discards service output by default; its default
-                  `log-type` is `none`. Under a container runtime that collects
-                  only PID 1's output, a service without this logs nowhere.
+                  `console` gives it `shares-console`, so the output joins the
+                  stream dinit itself writes to. That is the only stream a
+                  container runtime collects. Output passes through unchanged;
+                  dinit adds no prefix, so JSON log lines stay parseable. The
+                  default for process, bgprocess and scripted services.
 
-                  Output passes through unchanged. dinit adds no prefix, so a
-                  service that emits JSON lines stays parseable.
+                  `buffer` keeps the output in memory, readable with
+                  `dinitctl catlog`. A ring buffer cannot grow without bound,
+                  which makes this the one destination that needs no rotation.
+                  Use it for a service too chatty for the collected stream.
+                  See {option}`logBufferSize`.
 
-                  On by default for process, bgprocess and scripted services
-                  that do not set `log-type` or `logfile`.
+                  `file` writes to {option}`logfile`. **dinit does not rotate,
+                  and the file grows without bound**, so whatever owns the
+                  volume has to own the rotation. The default when `logfile` is
+                  set.
+
+                  `none` discards the output, which is dinit's own default.
+
+                  `console` and `file` are exclusive: dinit-service(5) says
+                  `logfile` has no effect on a service that shares the console.
+                  dinix picks `file` for you when you set `logfile`, rather than
+                  letting the console default silently win.
+
+                  Set this rather than `log-type`. `log-type` follows from it,
+                  so setting `log-type` by hand leaves a process service sharing
+                  the console, and dinit then ignores the log type.
+                '';
+              };
+              logDir = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = ''
+                  A directory this service writes log files into by itself.
+
+                  This declares a fact rather than changing dinit's behaviour.
+                  Some applications keep their own log files and cannot be
+                  pointed at standard error: Phorge's `phd` writes one file per
+                  daemon, rotates them itself, and reads them back.
+
+                  Naming the directory here puts it in the top-level
+                  {option}`logDirs`, so whatever builds the container derives
+                  the volume and its size from the service definition instead of
+                  matching two independent facts by hand.
+                '';
+              };
+              logDirSize = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = ''
+                  How large {option}`dinix.logDir` is allowed to get, as the
+                  consumer's own size syntax, for example `64Mi` for a
+                  Kubernetes `emptyDir`. Carried through to
+                  {option}`logDirs` untouched.
                 '';
               };
             };
@@ -240,23 +296,48 @@ let
             if hasPrefix "@" name then "${name} ${toStringPlus value}" else "${name} = ${toStringPlus value}";
         in
         {
-          # Deciding this from a sibling like log-type would need hasAttr on
-          # config, which forces config's key set, which needs the options
-          # definition below. That is an infinite recursion, so keep the
-          # default to the declared type alone.
-          dinix.console = mkDefault (
-            builtins.elem config.type [
-              "process"
-              "bgprocess"
-              "scripted"
-            ]
+          # Reading a declared sibling is fine; reading a freeform one with
+          # `or` is not, because that forces config's key set. log-type and
+          # logfile are declared above for exactly this.
+          # Only logfile may be read here. log-type derives from this setting,
+          # so reading it too would make the two each other's input.
+          dinix.log = mkDefault (
+            if config.logfile != null then
+              "file"
+            else if
+              builtins.elem config.type [
+                "process"
+                "bgprocess"
+                "scripted"
+              ]
+            then
+              "console"
+            else
+              "none"
           );
 
           # Every definition below is unconditional, and carries the condition
           # in its value instead. mkIf here would put config in its own
           # condition: a freeform submodule resolves which definitions exist
           # before config exists, so the condition cannot read config.
-          options = mkBefore (lib.optional config.dinix.console "shares-console");
+          options = mkBefore (lib.optional (config.dinix.log == "console") "shares-console");
+
+          # none is dinit's own default, and console is an option rather than a
+          # log type, so neither needs a line.
+          log-type = mkDefault (
+            if
+              builtins.elem config.dinix.log [
+                "buffer"
+                "file"
+              ]
+            then
+              config.dinix.log
+            else
+              null
+          );
+          log-buffer-size = mkDefault (
+            if config.dinix.log == "buffer" then topConfig.logBufferSize else null
+          );
 
           # dinit gives up after 3 restarts in 10 seconds. A service that boot
           # only waits for is meant to outlive its own crashes, so lift the
@@ -358,6 +439,44 @@ in
         an `emptyDir` is mounted at, and `/dev` does not serve: the kubelet
         creates it mode 755 owned by root, so a container running as a normal
         user cannot write there either.
+      '';
+    };
+
+    logBufferSize = mkOption {
+      type = types.int;
+      default = 262144;
+      description = ''
+        Bytes of output kept for a service with `dinix.log = "buffer"`.
+
+        dinit's own default is 4096, and it discards everything past the limit,
+        so a service of any volume keeps only its last few lines. 256 KiB holds
+        enough to explain a crash.
+      '';
+    };
+
+    logDirs = mkOption {
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            path = mkOption {
+              type = types.str;
+              description = "The directory the service writes into.";
+            };
+            size = mkOption {
+              type = types.nullOr types.str;
+              description = "How large it may get, in the consumer's own syntax.";
+            };
+          };
+        }
+      );
+      readOnly = true;
+      description = ''
+        Every directory a service declared through `dinix.logDir`, keyed by
+        service name.
+
+        Read this when building the container, so the volumes and their limits
+        come from the service definitions rather than from a second list kept
+        in step by hand.
       '';
     };
 
@@ -463,6 +582,16 @@ in
   };
 
   config = {
+    logDirs = pipe config.services [
+      (lib.filterAttrs (_: service: service.dinix.logDir != null))
+      (lib.mapAttrs (
+        _: service: {
+          path = service.dinix.logDir;
+          size = service.dinix.logDirSize;
+        }
+      ))
+    ];
+
     services.boot =
       let
         named =
