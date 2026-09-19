@@ -320,6 +320,56 @@ in
       description = "Whether to run dinit-check over the rendered services at build time.";
     };
 
+    socketPath = mkOption {
+      type = types.str;
+      default = "/run/dinitctl";
+      description = ''
+        Where dinit puts its control socket, and where the wrapped `dinitctl`
+        and `dinit-monitor` look for it.
+
+        This is dinit's own compiled-in default. **dinit exits 1 at startup
+        when it cannot create this socket**, so on a read-only root filesystem
+        this must name a writable volume. Under Kubernetes that means the path
+        an `emptyDir` is mounted at, and `/dev` does not serve: the kubelet
+        creates it mode 755 owned by root, so a container running as a normal
+        user cannot write there either.
+      '';
+    };
+
+    quiet = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether to stop dinit writing its own service status lines, the
+        `[  OK  ]` and `[STOPPD]` chatter, to standard output.
+
+        Service output is not affected. Where a log collector reads only the
+        output of PID 1, these lines land in the same stream as the services
+        and break a reader that expects one format per stream.
+      '';
+    };
+
+    consoleLevel = mkOption {
+      type = types.nullOr (
+        types.enum [
+          "none"
+          "error"
+          "warn"
+          "info"
+          "debug"
+        ]
+      );
+      default = "warn";
+      description = ''
+        How much of dinit's own logging reaches the console.
+
+        {option}`quiet` alone also silences this. The default puts it back at
+        `warn`, which keeps the "Service <name> process terminated with exit
+        code N" line. That line names the service that brought the container
+        down, and nothing else reports it.
+      '';
+    };
+
     userWrapper = mkOption {
       type = types.package;
       description = ''
@@ -332,8 +382,15 @@ in
     containerWrapper = mkOption {
       type = types.package;
       description = ''
-        dinit as PID 1 of a container. Copies the services into /run/services,
-        installs the user database, then execs `dinit --container`.
+        dinit as PID 1 of a container, reading its services straight from the
+        store.
+
+        A plain binary wrapper, so the image needs no shell, no coreutils and
+        no writable root filesystem. Setting {option}`users.installAtRuntime`
+        makes it a shell script instead, and puts a shell in the closure.
+
+        `meta.mainProgram` is `dinit`, so `lib.getExe` resolves it and the
+        whole thing symlinks into a larger environment.
       '';
     };
 
@@ -347,6 +404,14 @@ in
           envfileArg = mkOption {
             type = types.str;
             description = "The --env-file argument, or the empty string.";
+          };
+          dinitArgs = mkOption {
+            type = types.str;
+            description = "Flags every wrapped dinit gets, whatever the mode.";
+          };
+          containerArgs = mkOption {
+            type = types.str;
+            description = "Flags the container wrapper adds on top of dinitArgs.";
           };
           usersInstallScript = mkOption {
             type = types.nullOr types.package;
@@ -387,6 +452,18 @@ in
     internal = {
       envfileArg = optionalString (config.env-file != null) "--env-file ${config.env-file}";
 
+      dinitArgs = lib.concatStringsSep " " (
+        [ "--services-dir ${config.internal.services-dir}" ]
+        ++ lib.optional (config.internal.envfileArg != "") config.internal.envfileArg
+        ++ lib.optional config.quiet "--quiet"
+        ++ lib.optional (config.consoleLevel != null) "--console-level ${config.consoleLevel}"
+      );
+
+      containerArgs = lib.concatStringsSep " " [
+        "--container"
+        "--socket-path ${config.socketPath}"
+      ];
+
       services-dir = pkgs.runCommand "dinix-services" { } (
         concatLines (
           [ "mkdir --parents $out" ]
@@ -400,7 +477,7 @@ in
     };
 
     userWrapper =
-      pkgs.runCommand config.name
+      pkgs.runCommand "${config.name}-user"
         {
           nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
           meta.mainProgram = "dinit";
@@ -408,45 +485,50 @@ in
         ''
           mkdir --parents $out/bin
           makeBinaryWrapper ${getExe' config.package "dinit"} $out/bin/dinit \
-            --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
+            --add-flags "${config.internal.dinitArgs}"
           makeBinaryWrapper ${getExe' config.package "dinit-check"} $out/bin/dinit-check \
-            --add-flags "${config.internal.envfileArg} --services-dir ${config.internal.services-dir}"
+            --add-flags "${config.internal.dinitArgs}"
           ln --symbolic ${getExe' config.package "dinitctl"} $out/bin/dinitctl
           ln --symbolic ${getExe' config.package "dinit-monitor"} $out/bin/dinit-monitor
         '';
 
-    containerWrapper = pkgs.buildEnv {
-      name = "containerWrapper";
-      meta.mainProgram = "dinit";
-      paths = [
-        (lib.hiPrio (
-          pkgs.writeScriptBin "dinit" # bash
+    containerWrapper =
+      let
+        # dinit never writes to its services directory, so it reads them from
+        # the store and the container needs nothing writable for them.
+        # Measured against dinit 0.22.1 with the directory chmod a-w.
+        entrypoint =
+          if config.internal.usersInstallScript == null then
             ''
+              makeBinaryWrapper ${getExe' config.package "dinit"} $out/bin/dinit \
+                --add-flags "${config.internal.dinitArgs} ${config.internal.containerArgs}"
+            ''
+          else
+            ''
+              cat > $out/bin/dinit <<EOF
               #! ${pkgs.runtimeShell}
               set -euo pipefail
-              export PATH=${
-                lib.makeBinPath [
-                  pkgs.coreutils
-                  pkgs.rsync
-                ]
-              }:$PATH
-              mkdir --parents /run/services
-              mkdir --parents /var/log
-              rsync --archive ${config.internal.services-dir}/ /run/services
-
-              ${optionalString (config.internal.usersInstallScript != null) (
-                getExe config.internal.usersInstallScript
-              )}
-
-              exec ${getExe' config.package "dinit"} \
-                ${config.internal.envfileArg} \
-                --services-dir /run/services \
-                --container \
-                "$@"
-            ''
-        ))
-        config.package
-      ];
-    };
+              ${getExe config.internal.usersInstallScript}
+              exec ${getExe' config.package "dinit"} ${config.internal.dinitArgs} ${config.internal.containerArgs} "\$@"
+              EOF
+              chmod +x $out/bin/dinit
+            '';
+      in
+      pkgs.runCommand "${config.name}-container"
+        {
+          nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+          meta.mainProgram = "dinit";
+        }
+        ''
+          mkdir --parents $out/bin
+          ${entrypoint}
+          # dinitctl reads DINIT_SOCKET_PATH, so these work from an absolute
+          # store path with no PATH and no terminal, which is all a debugging
+          # exec into a scratch image has.
+          makeBinaryWrapper ${getExe' config.package "dinitctl"} $out/bin/dinitctl \
+            --set-default DINIT_SOCKET_PATH ${config.socketPath}
+          makeBinaryWrapper ${getExe' config.package "dinit-monitor"} $out/bin/dinit-monitor \
+            --set-default DINIT_SOCKET_PATH ${config.socketPath}
+        '';
   };
 }

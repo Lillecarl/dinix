@@ -94,27 +94,65 @@ in
     }
   ];
   options.users = {
-    enable = lib.mkEnableOption "users";
+    enable = lib.mkEnableOption "a user database for this configuration";
     users = lib.mkOption {
       type = lib.types.attrsOf usertype;
       default = { };
+      description = "Accounts to put in passwd, one attribute per account.";
     };
     groups = lib.mkOption {
       type = lib.types.attrsOf grouptype;
       default = { };
+      description = "Groups to put in group, one attribute per group.";
+    };
+    installAtRuntime = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether the container wrapper copies the user database into the root
+        filesystem before starting dinit.
+
+        Off by default, because a container root filesystem is usually
+        read-only, and because a volume mounted over /etc hides the
+        /etc/hosts and /etc/resolv.conf the runtime puts there, which takes
+        out name resolution. Mount the files in {option}`users.files`
+        individually instead.
+
+        Turning this on puts a shell, rsync and coreutils in the closure of
+        {option}`containerWrapper`, which is otherwise a plain binary
+        wrapper.
+      '';
+    };
+    files = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      description = ''
+        The user database as a store path, holding `etc/passwd`, `etc/group`,
+        `etc/nsswitch.conf` and an empty `var/empty`.
+
+        Mount these into a container one file at a time. A whole-directory
+        mount over /etc hides what the runtime puts there.
+
+        A process that calls `getpwuid` on its own uid fails outright when the
+        uid is absent from passwd, so the content matters even where nothing
+        reads the file directly.
+      '';
     };
   };
-  config.internal.usersInstallScript = lib.mkIf config.users.enable (
-    let
-      users = lib.pipe config.users.users [
-        lib.attrValues
-        (lib.sort (x: y: x.uid < y.uid))
-      ];
-      groups = lib.pipe config.users.groups [
-        lib.attrValues
-        (lib.sort (x: y: x.gid < y.gid))
-      ];
-      install = pkgs.symlinkJoin {
+
+  config = {
+    users.files =
+      let
+        users = lib.pipe config.users.users [
+          lib.attrValues
+          (lib.sort (x: y: x.uid < y.uid))
+        ];
+        groups = lib.pipe config.users.groups [
+          lib.attrValues
+          (lib.sort (x: y: x.gid < y.gid))
+        ];
+      in
+      pkgs.symlinkJoin {
         name = "usergrpnss";
         paths = [
           (pkgs.writeTextDir "etc/passwd" ''
@@ -131,24 +169,26 @@ in
           '')
         ];
       };
-    in
-    pkgs.writeScriptBin "usergroupinstall" # bash
-      ''
-        #! ${pkgs.runtimeShell}
-        export PATH=${
-          lib.makeBinPath [
-            pkgs.rsync
-            pkgs.coreutils
-          ]
-        }:$PATH
 
-        rsync --archive ${install}/ /
-        ${lib.concatLines (
-          map (user: ''
-            mkdir --parents ${user.homeDir}
-            chown -R ${user.name} ${user.homeDir}
-          '') (lib.attrValues config.users.users)
-        )}
-      ''
-  );
+    internal.usersInstallScript = lib.mkIf (config.users.enable && config.users.installAtRuntime) (
+      pkgs.writeScriptBin "usergroupinstall" # bash
+        ''
+          #! ${pkgs.runtimeShell}
+          export PATH=${
+            lib.makeBinPath [
+              pkgs.rsync
+              pkgs.coreutils
+            ]
+          }:$PATH
+
+          rsync --archive ${config.users.files}/ /
+          ${lib.concatLines (
+            map (user: ''
+              mkdir --parents ${user.homeDir}
+              chown -R ${user.name} ${user.homeDir}
+            '') (lib.attrValues config.users.users)
+          )}
+        ''
+    );
+  };
 }
