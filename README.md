@@ -296,6 +296,11 @@ running both:
   therefore loads. That is not a reason to put a key in the store, which
   publishes it to every process on the host.
 
+Add that one account to `users.users` with the uid the container runs as. sshd
+calls `getpwnam` on the login name and reports `invalid user` when it finds
+nothing, which names neither the uid nor the file. dinix writes root and nobody
+and no one else.
+
 ## One store path, or several
 
 Everything dinix generates goes into a single store path, `configDir`:

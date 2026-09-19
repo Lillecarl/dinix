@@ -116,6 +116,11 @@ in
           refuses. **That is not a reason to put a key in the store**, which
           publishes it to every process on the host.
 
+        That one account still has to be in {option}`users.users`, with the
+        uid the container runs as. sshd calls `getpwnam` on the login name and
+        reports "invalid user" when it finds nothing, which names neither the
+        uid nor the file. dinix writes root and nobody and no one else.
+
         This is the shape for a container that must not run as root, and the
         cost is that it serves one account.
       '';

@@ -12,8 +12,9 @@
       Port = 2222;
       PermitRootLogin = "prohibit-password";
       AuthorizedKeysFile = "${clientKey}/authorized_keys";
-      # sshd's StrictModes walks every parent of the keys file, and
-      # /nix/store is group-writable, so a keys file in the store fails it.
+      # StrictModes walks every parent directory of the keys file, and what
+      # /nix/store looks like inside an image is the image builder's choice.
+      # The test is not about that.
       StrictModes = false;
       # A refused login has to explain itself in the container's own log,
       # which is the only evidence the test collects. VERBOSE and not DEBUG1:
