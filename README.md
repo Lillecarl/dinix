@@ -201,6 +201,13 @@ and `etc/nsswitch.conf`, as real files rather than symlinks. Mount those into a
 container one file at a time: a volume over `/etc` hides the `/etc/hosts` and
 `/etc/resolv.conf` the runtime puts there and takes out name resolution.
 
+**Under Kubernetes, a file at a time means `subPath`, and a `subPath` mount
+never updates.** The kubelet refreshes whole-directory mounts only: "A
+container using a ConfigMap as a `subPath` volume mount will not receive
+updates when the ConfigMap changes." So mounting the user database a file at a
+time and rotating it without restarting the pod cannot both be true. Restart
+the pod, or mount a directory somewhere harmless and symlink into it.
+
 **No shadow entry can match a password, and there is no option to set a hash.**
 Nix normalises store permissions to world-readable, so a hash here would be a
 hash published to every user and process on the host. Mount a real shadow file
