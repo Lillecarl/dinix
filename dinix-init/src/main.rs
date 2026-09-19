@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 mod spec;
 
-use spec::Step;
+use spec::{Kind, Step};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -71,7 +71,9 @@ fn apply(step: &Step) -> Result<(), String> {
                 .map_err(|error| format!("checking {shown}: {error}"))?
                 .file_type();
             if found.is_symlink() {
-                return Err(format!("{shown} is a symlink, refusing to touch its target"));
+                return Err(format!(
+                    "{shown} is a symlink, refusing to touch its target"
+                ));
             }
             if !found.is_dir() {
                 return Err(format!("{shown} exists and is not a directory"));
@@ -84,6 +86,35 @@ fn apply(step: &Step) -> Result<(), String> {
                 std::os::unix::fs::chown(path, *uid, *gid).map_err(|error| {
                     format!("setting owner on {shown}: {error} (only root may do this)")
                 })?;
+            }
+
+            Ok(())
+        }
+
+        Step::MustExist { path, kind } => {
+            let shown = path.display();
+
+            // Follows symlinks on purpose: the question is whether something
+            // usable is there, not how it got there.
+            let found = match fs::metadata(path) {
+                Ok(found) => found,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "{shown} must exist and does not. \
+                         Nothing creates it, so a volume that should provide it \
+                         is probably not mounted."
+                    ))
+                }
+                Err(error) => return Err(format!("checking {shown}: {error}")),
+            };
+
+            let ok = match kind {
+                Kind::Any => true,
+                Kind::Dir => found.is_dir(),
+                Kind::File => found.is_file(),
+            };
+            if !ok {
+                return Err(format!("{shown} must be {}, and is not", kind.describe()));
             }
 
             Ok(())

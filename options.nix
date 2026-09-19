@@ -10,6 +10,11 @@ let
   # top-level one reachable from inside it.
   topConfig = config;
 
+  # Whether there is any init work, and so a dinix-init service to order
+  # against. Read from inside the service submodule, so it must not depend on
+  # config.services.
+  needsInit = config.dirs != { } || config.mustExist != { };
+
   inherit (lib)
     attrNames
     attrsToList
@@ -137,7 +142,7 @@ let
   # An option the manpage writes with a colon suffix (depends-on:) takes a Nix
   # list here, and each element becomes its own line.
   serviceType = types.submodule (
-    { config, ... }:
+    { name, config, ... }:
     {
       freeformType = types.attrsOf (types.either dinixListType dinixStringLikePlusType);
 
@@ -167,6 +172,7 @@ let
         # freeform ones do otherwise.
         depends-on = mkDinitListOption { };
         waits-for = mkDinitListOption { };
+        after = mkDinitListOption { };
         options = mkDinitListOption { };
         restart = mkDinitOption { };
         restart-delay = mkDinitOption { };
@@ -255,6 +261,10 @@ let
                   {option}`logDirs`, so whatever builds the container derives
                   the volume and its size from the service definition instead of
                   matching two independent facts by hand.
+
+                  This does not make the directory. Such a directory is usually
+                  a mounted volume, and the mount makes it. Add it to
+                  {option}`dirs` as well if it needs making and owning.
                 '';
               };
               logDirSize = mkOption {
@@ -321,6 +331,18 @@ let
           # condition: a freeform submodule resolves which definitions exist
           # before config exists, so the condition cannot read config.
           options = mkBefore (lib.optional (config.dinix.log == "console") "shares-console");
+
+          # boot starts dinix-init and the critical services together, so a
+          # hard dependency on dinix-init would not order them. after does.
+          after = mkBefore (
+            lib.optional (
+              needsInit
+              && !(builtins.elem name [
+                "dinix-init"
+                "boot"
+              ])
+            ) "dinix-init"
+          );
 
           # none is dinit's own default, and console is an option rather than a
           # log type, so neither needs a line.
@@ -442,6 +464,106 @@ in
       '';
     };
 
+    dirs = mkOption {
+      type = types.attrsOf (
+        types.submodule (
+          { name, ... }:
+          {
+            options = {
+              path = mkOption {
+                type = types.str;
+                default = name;
+                description = "The directory to make. Defaults to the attribute name.";
+              };
+              mode = mkOption {
+                type = types.str;
+                default = "0755";
+                description = "Octal permissions for the directory itself.";
+              };
+              uid = mkOption {
+                type = types.nullOr types.int;
+                default = null;
+                description = ''
+                  Numeric owner, or null to leave it alone.
+
+                  Numeric rather than a name on purpose: this runs before the
+                  services do, so the user database may not be in place yet and
+                  a name would be a lookup that cannot be relied on. Setting an
+                  owner at all needs root.
+                '';
+              };
+              gid = mkOption {
+                type = types.nullOr types.int;
+                default = null;
+                description = "Numeric group, or null to leave it alone. See uid.";
+              };
+            };
+          }
+        )
+      );
+      default = { };
+      description = ''
+        Directories to make before any service starts, keyed by path.
+
+        A Nix build cannot chown, so a directory that needs an owner or a mode
+        has to be made at startup. {option}`initPackage` does that and nothing
+        else: it has no way to run a program, which is why the image needs no
+        shell.
+
+        Setting this adds a `dinix-init` service that the boot service depends
+        on, so a directory that cannot be made stops the container rather than
+        letting a service start without it.
+      '';
+    };
+
+    mustExist = mkOption {
+      type = types.attrsOf (
+        types.submodule (
+          { name, ... }:
+          {
+            options = {
+              path = mkOption {
+                type = types.str;
+                default = name;
+                description = "The path that has to be there already.";
+              };
+              kind = mkOption {
+                type = types.enum [
+                  "any"
+                  "dir"
+                  "file"
+                ];
+                default = "dir";
+                description = "What it has to be.";
+              };
+            };
+          }
+        )
+      );
+      default = { };
+      description = ''
+        Paths that must already exist before any service starts, keyed by path.
+        Nothing is created; this only checks, and stops the container when the
+        check fails.
+
+        This is for what a volume is supposed to provide. An unmounted volume
+        otherwise shows up as whichever service happens to touch the path
+        first, failing in its own vocabulary. Checking here names the path and
+        says nothing created it, before anything else runs.
+
+        Checked before {option}`dirs` is made.
+      '';
+    };
+
+    initPackage = mkOption {
+      type = types.package;
+      default = pkgs.callPackage ./dinix-init/package.nix { };
+      description = ''
+        The helper that makes {option}`dirs`. Statically linked and about
+        500 KiB in a single store path with no dependencies.
+      '';
+    };
+
     logBufferSize = mkOption {
       type = types.int;
       default = 262144;
@@ -549,6 +671,10 @@ in
             type = types.package;
             description = "package, with the shutdown tools removed if asked for.";
           };
+          initSpec = mkOption {
+            type = types.package;
+            description = "The dirs, rendered for dinix-init.";
+          };
           envfileArg = mkOption {
             type = types.str;
             description = "The --env-file argument, or the empty string.";
@@ -582,6 +708,12 @@ in
   };
 
   config = {
+    services.dinix-init = mkIf needsInit {
+      type = "scripted";
+      command = "${getExe config.initPackage} ${config.internal.initSpec}";
+      dinix.log = "console";
+    };
+
     logDirs = pipe config.services [
       (lib.filterAttrs (_: service: service.dinix.logDir != null))
       (lib.mapAttrs (
@@ -604,7 +736,10 @@ in
       in
       {
         type = mkDefault "internal";
-        depends-on = critical;
+        # A hard dependency, so a directory that cannot be made, or a mount
+        # that is not there, stops the container instead of letting a service
+        # start without it.
+        depends-on = critical ++ lib.optional needsInit "dinix-init";
         waits-for = named false;
         # boot restarts by default, which would bring a dead critical service
         # back up and keep dinit alive. Measured against dinit 0.22.1.
@@ -623,6 +758,32 @@ in
               done
             '';
           });
+
+      initSpec = pkgs.writeText "dinix-init.spec" (
+        concatLines (
+          [ "# Generated by dinix. See dinix-init/src/spec.rs." ]
+          # Checks first: a missing mount should be reported before anything is
+          # made on top of it.
+          ++ (lib.mapAttrsToList (
+            _: required:
+            lib.concatStringsSep "\t" [
+              "must-exist"
+              required.path
+              required.kind
+            ]
+          ) config.mustExist)
+          ++ (lib.mapAttrsToList (
+            _: dir:
+            lib.concatStringsSep "\t" [
+              "dir"
+              dir.path
+              dir.mode
+              (if dir.uid == null then "-" else toString dir.uid)
+              (if dir.gid == null then "-" else toString dir.gid)
+            ]
+          ) config.dirs)
+        )
+      );
 
       envfileArg = optionalString (config.env-file != null) "--env-file ${config.env-file}";
 

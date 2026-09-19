@@ -147,6 +147,37 @@ there.
 `dinit-monitor`, so both work from an absolute store path with an empty
 environment.
 
+### Directories, and checking what should already be there
+
+A Nix build cannot `chown`, so a directory that needs an owner or a mode has to
+be made at startup. `dirs` does that:
+
+```nix
+dirs."/run/sshd" = { mode = "0755"; uid = 0; gid = 0; };
+mustExist."/data" = { kind = "dir"; };
+```
+
+`mustExist` creates nothing. It checks, and stops the container when the check
+fails. That is for what a volume is supposed to provide: an unmounted volume
+otherwise surfaces as whichever service touches the path first, failing in its
+own vocabulary. Checks run before `dirs` is made.
+
+Both are done by `dinix-init`, a small Rust binary in this repository:
+
+- **413 KiB, one store path, statically linked, no dependencies.**
+- **It cannot run a program.** There is no `exec` step and there must never be
+  one; that is the whole reason it exists instead of a shell. Unknown steps are
+  rejected rather than ignored.
+- It refuses to touch a symlink. `create_dir_all` succeeds on a symlink to a
+  directory, and both `set_permissions` and `chown` follow symlinks, so
+  anything able to plant one could otherwise choose what got chowned.
+- Owners are numeric. This runs before the services do, so the user database
+  may not be in place yet and a name would be a lookup that cannot be relied on.
+
+Setting either option adds a `dinix-init` service that `boot` depends on, and
+every other service gets `after: dinix-init`. Without the `after`, `boot` would
+start `dinix-init` and the critical services together.
+
 ### Users
 
 `users.files` is a store path holding `etc/passwd`, `etc/group`, `etc/shadow`,
