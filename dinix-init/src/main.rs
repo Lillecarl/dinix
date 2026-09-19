@@ -5,6 +5,7 @@
 //! can execute anything else. Adding an `exec` step would throw that away.
 
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::ExitCode;
@@ -51,8 +52,19 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn apply(step: &Step) -> Result<(), String> {
-    match step {
+/// Whether every owner the spec names already holds, so a chown would
+/// change nothing and is skipped rather than attempted.
+fn owner_matches(
+    current_uid: u32,
+    current_gid: u32,
+    want_uid: Option<u32>,
+    want_gid: Option<u32>,
+) -> bool {
+    want_uid.map_or(true, |wanted| current_uid == wanted)
+        && want_gid.map_or(true, |wanted| current_gid == wanted)
+}
+
+fn apply(step: &Step) -> Result<(), String> {    match step {
         Step::Dir {
             path,
             mode,
@@ -83,9 +95,18 @@ fn apply(step: &Step) -> Result<(), String> {
                 .map_err(|error| format!("setting mode on {shown}: {error}"))?;
 
             if uid.is_some() || gid.is_some() {
-                std::os::unix::fs::chown(path, *uid, *gid).map_err(|error| {
-                    format!("setting owner on {shown}: {error} (only root may do this)")
-                })?;
+                let current = fs::metadata(path)
+                    .map_err(|error| format!("checking owner on {shown}: {error}"))?;
+                // A chown that would change nothing is skipped rather than
+                // attempted. A non-root init cannot chown at all — not even
+                // to the owner the path already has, which the kernel still
+                // refuses — so attempting it would fail a step that is
+                // already satisfied. Anything else is still an error below.
+                if !owner_matches(current.uid(), current.gid(), *uid, *gid) {
+                    std::os::unix::fs::chown(path, *uid, *gid).map_err(|error| {
+                        format!("setting owner on {shown}: {error} (only root may do this)")
+                    })?;
+                }
             }
 
             Ok(())
@@ -119,5 +140,47 @@ fn apply(step: &Step) -> Result<(), String> {
 
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matching_owner_is_no_chown() {
+        assert!(owner_matches(1000, 100, Some(1000), Some(100)));
+    }
+
+    #[test]
+    fn unnamed_half_always_matches() {
+        assert!(owner_matches(1000, 100, Some(1000), None));
+        assert!(owner_matches(1000, 100, None, Some(100)));
+        assert!(owner_matches(1000, 100, None, None));
+    }
+
+    #[test]
+    fn differing_owner_needs_chown() {
+        assert!(!owner_matches(1000, 100, Some(0), Some(100)));
+        assert!(!owner_matches(1000, 100, Some(1000), Some(0)));
+    }
+
+    #[test]
+    fn dir_step_with_own_owner_applies() {
+        // Exercises the stat-and-skip path end to end. A directory just
+        // made is owned by whoever runs this, so the spec below always
+        // matches and the chown is skipped: whatever user runs this — the
+        // Nix sandbox builds without privilege — only mkdir and chmod run.
+        let dir = std::env::temp_dir().join(format!("dinix-init-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let me = fs::metadata(&dir).unwrap().uid();
+        apply(&Step::Dir {
+            path: dir.clone(),
+            mode: 0o700,
+            uid: Some(me),
+            gid: None,
+        })
+        .unwrap();
+        fs::remove_dir(&dir).unwrap();
     }
 }
