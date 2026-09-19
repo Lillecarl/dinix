@@ -65,6 +65,20 @@ let
 
   uml = import (user-mode-nixos-src + "/lib.nix") { inherit pkgs; };
 
+  # The guest every test runs in. It is a NixOS configuration and nothing more
+  # than podman plus an ssh client.
+  testGuest = {
+    virtualisation.podman.enable = true;
+    environment.systemPackages = [ pkgs.openssh ];
+    boot.uml = {
+      memory = "2048M";
+      # The image unpacks into the guest's own filesystem rather than being
+      # read out of the store, so the disk holds a copy of the closure. A
+      # sparse file, so this costs nothing until it is used.
+      diskSize = 8192;
+    };
+  };
+
   # Made at build time and not reproducible, which is right here: the test
   # wants a key nothing else has, and Nix caches the derivation anyway.
   clientKey =
@@ -128,17 +142,7 @@ let
     uml.mkTest {
       inherit name;
       script = ./tests/openssh.py;
-      nodes.node = {
-        virtualisation.podman.enable = true;
-        environment.systemPackages = [ pkgs.openssh ];
-        boot.uml = {
-          memory = "2048M";
-          # The image unpacks into the guest's own filesystem rather than being
-          # read out of the store, so the disk holds a copy of the closure. A
-          # sparse file, so this costs nothing until it is used.
-          diskSize = 8192;
-        };
-      };
+      nodes.node = testGuest;
       settings = {
         inherit uid podmanUser;
         loginUser = loginUser.name;
@@ -161,6 +165,61 @@ let
         ++ lib.optional (uid == 0) "/var/empty";
       };
     };
+
+  /**
+    A test for a collection of services, driven by what the collection
+    declares rather than by a script of its own.
+
+    This is what a service port uses. `tests/collections/<name>.nix` is an
+    ordinary dinix configuration plus a `collection` attribute saying which
+    writable paths the services need and what to ask the running container.
+    No Python. See PORTING.md.
+  */
+  collectionTest =
+    name:
+    let
+      dinix = import ./. {
+        inherit pkgs;
+        modules = [
+          ./tests/collection-options.nix
+          (./tests/collections + "/${name}.nix")
+        ];
+      };
+
+      image = nix2container.buildImage {
+        name = "dinix-collection-${name}";
+        tag = "test";
+        # No copyToRoot. A collection needs no shell: every check names an
+        # absolute store path, and dinit execs its services directly.
+        config.entrypoint = [ (lib.getExe dinix.config.containerWrapper) ];
+        maxLayers = 100;
+      };
+    in
+    uml.mkTest {
+      name = "dinix-collection-${name}";
+      script = ./tests/collection.py;
+      nodes.node = testGuest;
+      settings = {
+        collection = name;
+        copyToPodman = lib.getExe image.copyToPodman;
+        imageRef = "${image.imageName}:${image.imageTag}";
+        configDir = "${dinix.config.configDir}";
+        dinitctl = "${dinix.config.containerWrapper}/bin/dinitctl";
+        podmanUser = "";
+        inherit (dinix.config.collection) services checks;
+        tmpfs = [ "/run" ] ++ dinix.config.collection.tmpfs;
+      };
+    };
+
+  # Every file in tests/collections is a test. Adding a service port means
+  # adding a file there, and nothing in this one.
+  collections = lib.mapAttrs' (
+    file: _:
+    let
+      name = lib.removeSuffix ".nix" file;
+    in
+    lib.nameValuePair name (collectionTest name)
+  ) (builtins.readDir ./tests/collections);
 
   containerTest = containerTestFor { name = "dinix-openssh"; };
 
@@ -211,5 +270,7 @@ in
     clientKey
     containerTest
     rootlessTest
+    collections
     ;
 }
+// collections
