@@ -270,6 +270,13 @@ set rather than assumed.
 it crash and restart without taking the container down. Set it to `true` where
 sshd is the reason the container exists.
 
+**An ssh container needs a shell, and dinix does not put one there.** sshd runs
+the login shell named in `passwd`, and then looks for the command on a PATH of
+`/usr/bin:/bin:/usr/sbin:/sbin` that it compiles in. A Nix closure has none of
+those, so a login succeeds and then every command fails. Put busybox or
+coreutils at `/bin` in the image, or point the account's `shell` at a store
+path. Nothing dinix runs itself needs this.
+
 ### sshd without root
 
 `openssh.rootless = true` is the shape for a container that must not run as
@@ -344,3 +351,25 @@ running a configuration as an unprivileged user.
 `verifyConfig` runs `dinit-check` over the rendered services as part of the
 build, so a bad configuration fails the build rather than the container. It is
 on by default.
+
+## Tests
+
+`dinit-check` reads a configuration. It cannot say whether the container comes
+up. That takes running one:
+
+```
+nix build --file ./dev.nix containerTest        # inside a build sandbox
+nix run   --file ./dev.nix containerTest.run    # outside it, with a network
+```
+
+The test boots a guest with
+[user-mode-nixos](https://github.com/Lillecarl/user-mode-nixos), runs podman in
+it, loads the nix2container image whose entrypoint is `containerWrapper`, and
+asserts against the running container. The guest kernel is User-Mode Linux, so
+this needs no KVM, no root and no tap devices, and the default form runs inside
+a Nix build sandbox.
+
+The container gets the shape Kubernetes gives one: a read-only root filesystem,
+a tmpfs where something has to be written, and the user database mounted a file
+at a time. `tests/openssh.py` is the script and `tests/container.nix` is the
+configuration under test.
