@@ -407,6 +407,10 @@ in
             type = types.str;
             description = "The --env-file argument, or the empty string.";
           };
+          checkArgs = mkOption {
+            type = types.str;
+            description = "Flags dinit-check accepts: the services directory and the env-file.";
+          };
           dinitArgs = mkOption {
             type = types.str;
             description = "Flags every wrapped dinit gets, whatever the mode.";
@@ -454,9 +458,14 @@ in
     internal = {
       envfileArg = optionalString (config.env-file != null) "--env-file ${config.env-file}";
 
-      dinitArgs = lib.concatStringsSep " " (
+      checkArgs = lib.concatStringsSep " " (
         [ "--services-dir ${config.internal.services-dir}" ]
         ++ lib.optional (config.internal.envfileArg != "") config.internal.envfileArg
+      );
+
+      # dinit-check takes neither of these, so it gets checkArgs instead.
+      dinitArgs = lib.concatStringsSep " " (
+        [ config.internal.checkArgs ]
         ++ lib.optional config.quiet "--quiet"
         ++ lib.optional (config.consoleLevel != null) "--console-level ${config.consoleLevel}"
       );
@@ -489,7 +498,7 @@ in
           makeBinaryWrapper ${getExe' config.package "dinit"} $out/bin/dinit \
             --add-flags "${config.internal.dinitArgs}"
           makeBinaryWrapper ${getExe' config.package "dinit-check"} $out/bin/dinit-check \
-            --add-flags "${config.internal.dinitArgs}"
+            --add-flags "${config.internal.checkArgs}"
           ln --symbolic ${getExe' config.package "dinitctl"} $out/bin/dinitctl
           ln --symbolic ${getExe' config.package "dinit-monitor"} $out/bin/dinit-monitor
         '';
