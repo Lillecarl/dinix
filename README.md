@@ -348,15 +348,18 @@ etc/              passwd, group, shadow, nsswitch.conf, sshd_config
 A container image built from a Nix closure usually gets a layer per store path,
 and image formats have a layer ceiling. The pieces above all change together,
 so spending several layers on them buys nothing. Measured with nix2container on
-a configuration with two services, two per-service environment files, a
-directory and a check:
+`demo.nix`, which is what `dev.nix report` builds — eleven services, two
+environment files, no `dirs`:
 
 | | layers | size |
 | --- | --- | --- |
-| `consolidateConfig = true` | **14** | 51 MB |
-| `consolidateConfig = false` | 18 | 51 MB |
+| `consolidateConfig = true` | **24** | 66 MB |
+| `consolidateConfig = false` | 26 | 66 MB |
 
-Same bytes, four fewer layers.
+Same bytes, two fewer layers. **The saving is one layer per piece, so it grows
+with the configuration and not with its size.** This one has an environment
+file dinit reads and one per-service file; a configuration that also uses
+`dirs`, `mustExist` or `openssh` has more pieces and saves more.
 
 A service refers to its environment file as `../env/<name>`, which dinit
 resolves against the directory holding the description, so the reference stays
