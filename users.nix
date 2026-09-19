@@ -19,11 +19,9 @@ let
         };
         uid = lib.mkOption {
           type = lib.types.int;
-          apply = toString;
         };
         gid = lib.mkOption {
           type = lib.types.int;
-          apply = toString;
         };
         comment = lib.mkOption {
           type = lib.types.str;
@@ -42,7 +40,7 @@ let
           type = lib.types.str;
         };
       };
-      config.text = "${config.name}:${config.password}:${config.uid}:${config.gid}:${config.comment}:${config.homeDir}:${config.shell}";
+      config.text = "${config.name}:${config.password}:${toString config.uid}:${toString config.gid}:${config.comment}:${config.homeDir}:${config.shell}";
     }
   );
   grouptype = lib.types.submodule (
@@ -55,7 +53,6 @@ let
         };
         gid = lib.mkOption {
           type = lib.types.int;
-          apply = toString;
         };
         users = lib.mkOption {
           type = lib.types.listOf lib.types.str;
@@ -65,7 +62,7 @@ let
           type = lib.types.str;
         };
       };
-      config.text = "${config.name}:x:${config.gid}:${lib.concatStringsSep "," config.users}";
+      config.text = "${config.name}:x:${toString config.gid}:${lib.concatStringsSep "," config.users}";
     }
   );
 in
