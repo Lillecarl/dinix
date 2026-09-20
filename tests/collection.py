@@ -65,6 +65,11 @@ ETC = ["passwd", "group", "shadow", "nsswitch.conf"]
 # bound that was testing the machine's load rather than dinit.
 STOP_BUDGET_MS = 10_000
 
+# How long a check may take to start passing. Not a timeout on the command --
+# each of those has its own -- but the window in which a service that has
+# spawned is allowed to finish becoming useful.
+CHECK_BUDGET_S = 60
+
 
 def run_args(settings: dict, state_mount: str) -> str:
     mounts = [
@@ -206,21 +211,57 @@ async def wait_for_services(node: Machine, settings: dict, target: SimpleNamespa
     print(f"[test] every service started: {', '.join(settings['services'])}", flush=True)
 
 
+async def service_states(
+    node: Machine, settings: dict, target: SimpleNamespace
+) -> str:
+    """What dinit thinks of each service, for a failure message.
+
+    dinit marks a process service started the moment it spawns, so a program
+    that dies immediately still passes `is-started` and the first check is what
+    notices.  The status says so where the log does not: dinit prints nothing
+    of its own about a service that exits quietly, which left an empty log as
+    the only evidence more than once.
+    """
+    lines = []
+    for service in settings["services"]:
+        _, status = await node.execute(
+            f"{target.ctl} status {service} 2>&1", timeout=60
+        )
+        lines.append(f"{service}: {' '.join(status.split())}")
+    return "\n".join(lines) + "\n"
+
+
 async def run_checks(
     node: Machine, settings: dict, target: SimpleNamespace, logs: str
 ) -> None:
     for check in settings["checks"]:
-        code, out = await node.execute(
-            f"{target.run(check['command'])} 2>&1", timeout=120
-        )
-        if code != 0 or check["expect"] not in out:
+        # Retried, not asked once. dinit marks a process service started the
+        # moment it spawns, and the portable service interface has no readiness
+        # probe at all -- see Lillecarl/dinix#15 -- so "started" says nothing
+        # about whether the program has bound its port yet. Without this the
+        # result depends on which won the race, which is how the same
+        # collection passed as an ordinary user and failed as root.
+        async def attempt(check: dict = check) -> tuple[bool, str]:
+            code, out = await node.execute(
+                f"{target.run(check['command'])} 2>&1", timeout=120
+            )
+            return code == 0 and check["expect"] in out, f"exit {code}: {out.strip()[:200]}"
+
+        try:
+            await until(check["name"], attempt, CHECK_BUDGET_S, node)
+        except Exception:
+            code, out = await node.execute(
+                f"{target.run(check['command'])} 2>&1", timeout=120
+            )
             raise MachineError(
                 f"[{node.name}] check {check['name']!r} failed (exit {code}).\n"
                 f"  ran:      {check['command']}\n"
                 f"  expected: {check['expect']!r}\n"
                 f"  got:      {out.strip()!r}\n"
                 f"--- {target.log_title} ---\n{logs}"
-            )
+                f"--- what dinit says about each service ---\n"
+                f"{await service_states(node, settings, target)}"
+            ) from None
         print(f"[test] {check['name']}", flush=True)
 
 
