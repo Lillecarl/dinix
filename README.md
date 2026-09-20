@@ -527,9 +527,14 @@ on by default.
 up. That takes running one:
 
 ```
+nix build --file ./dev.nix checks                       # everything
 nix build --file ./dev.nix containerTest rootlessTest   # in a build sandbox
 nix run   --file ./dev.nix containerTest.run            # outside it
 ```
+
+`checks` is every collection in every mode and both container tests, under one
+name, which is what CI builds. A collection added under `tests/collections`
+joins it by existing.
 
 The test boots a guest with
 [user-mode-nixos](https://github.com/Lillecarl/user-mode-nixos), runs podman in

@@ -297,6 +297,38 @@ let
     podmanUser = "1000:1000";
   };
 
+  /**
+    Everything a change has to pass, under one name.
+
+    `nix build --file ./dev.nix checks` builds every collection in every mode
+    and both container tests. A test output is an empty file whose existence
+    means it ran and behaved, so this is a symlink farm of them.
+
+    One name rather than a list in a workflow: a collection added under
+    `tests/collections` joins this by existing, and CI needs no edit to run it.
+  */
+  checks = pkgs.linkFarm "dinix-checks" (
+    [
+      {
+        name = "container";
+        path = containerTest;
+      }
+      {
+        name = "container-rootless";
+        path = rootlessTest;
+      }
+    ]
+    ++ lib.concatLists (
+      lib.mapAttrsToList (
+        name: modes:
+        lib.mapAttrsToList (mode: test: {
+          name = "${name}-${mode}";
+          path = test;
+        }) modes
+      ) collections
+    )
+  );
+
   # buildImage's output is a JSON manifest naming every layer and the store
   # paths in it, so the count and the sizes come from the image itself rather
   # than from counting the closure by hand.
@@ -329,6 +361,7 @@ let
 in
 {
   inherit
+    checks
     consolidated
     split
     report
