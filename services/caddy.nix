@@ -52,12 +52,14 @@ in
       description = ''
         The configuration, in the format {option}`caddy.adapter` names.
 
-        Two things a container asks of it. Turn `auto_https` off, or name every
-        site with an `http://` scheme: Caddy otherwise tries to get a
+        Three things a container asks of it. Turn `auto_https` off, or name
+        every site with an `http://` scheme: Caddy otherwise tries to get a
         certificate over ACME, which needs a network and a resolvable name.
-        And a path in here — a document root, a log file — is fixed when this
-        is generated, so it cannot be under the state directory. See
-        PORTING.md.
+        Say `admin off` in the global block unless the admin endpoint is
+        wanted — it binds 127.0.0.1:2019 and a second instance cannot start
+        beside the first. And a path in here — a document root, a log file —
+        is fixed when this is generated, so it cannot be under the state
+        directory. See PORTING.md.
       '';
     };
 

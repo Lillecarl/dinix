@@ -27,7 +27,23 @@ let
 
   cfg = config.mysql;
 
-  quote = value: "'${lib.replaceStrings [ "'" ] [ "''" ] value}'";
+  # Backslash as well as the quote: MariaDB's default sql_mode reads a
+  # backslash inside a string literal as an escape, so a password holding one
+  # would arrive as something else.
+  quote =
+    value:
+    "'${
+      lib.replaceStrings
+        [
+          "\\"
+          "'"
+        ]
+        [
+          "\\\\"
+          "''"
+        ]
+        value
+    }'";
 
   initSql =
     lib.concatMapStrings (database: "CREATE DATABASE IF NOT EXISTS `${database.name}`;\n") cfg.initialDatabases
