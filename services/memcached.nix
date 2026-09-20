@@ -1,7 +1,7 @@
 # memcached, as a NixOS Modular Service.
 #
-# Options ported from services-flake's nix/services/memcached.nix, which is
-# Apache-2.0 and itself based on devenv's module. See services/redis.nix for
+# Options ported from services-flake's nix/services/memcached.nix, which is MIT
+# and itself based on devenv's Apache-2.0 module. See services/redis.nix for
 # the shape and PORTING.md for what changes on the way across.
 { memcached }:
 

@@ -566,7 +566,9 @@ container inside a grace period.
 
 `redis.nix` is a service ported from
 [services-flake](https://github.com/juspay/services-flake), and
-[PORTING.md](PORTING.md) is how to port the next one.
+[PORTING.md](PORTING.md) is how to port the next one — from there or from
+[devenv](https://github.com/cachix/devenv), the other library of service
+modules.
 
 ### The openssh test
 

@@ -31,14 +31,34 @@ kept ours: a `php.ini` of one's own, and a pool socket under the state
 directory. A path inside a generated configuration file is fixed when the file
 is generated, so it cannot be relocatable.
 
-# Porting a service from services-flake
+# Porting a service from services-flake or devenv
 
-[services-flake](https://github.com/juspay/services-flake) has about thirty
-services written as Nix modules. Their supervisor is process-compose and ours
-is dinit, so a port keeps the options and changes the last step.
+Two libraries of service modules, and the same port works from either:
+
+- [services-flake](https://github.com/juspay/services-flake),
+  `nix/services/<name>.nix`. About thirty services, supervised by
+  process-compose.
+- [devenv](https://github.com/cachix/devenv), `src/modules/services/<name>.nix`.
+  About forty, supervised by process-compose as well. Most of the
+  services-flake modules say in their first line that they came from here, so
+  read both where both have the service — devenv usually has more options and
+  services-flake usually has a test.
+
+Ours is dinit, so a port keeps the options and changes the last step.
 `services/redis.nix` and `tests/collections/redis.nix` are the worked example;
 read them beside `services-flake/nix/services/redis.nix` and the mapping is
 visible.
+
+Two things to check before you spend time on a service:
+
+- **Is the package free, and is it in the cache?** `nix eval --file /etc/nixpkgs
+  <pkg>.meta.license` and `nix path-info --store https://cache.nixos.org
+  --closure-size --human-readable "$(nix eval --raw --file /etc/nixpkgs <pkg>)"`.
+  `dev.nix` takes a plain `import <nixpkgs> { }`, so an unfree or insecure
+  package needs a caller to relax its configuration and CI cannot run it.
+  Measured: `mongodb` is unfree (SSPL) and `minio` is marked insecure.
+- **How big is the closure?** Every mode boots a guest that unpacks it. A
+  JVM service is gigabytes, and `checks` already builds thirty of these.
 
 A port is two files, and nothing else is edited.
 
@@ -268,5 +288,5 @@ name it.
 
 ## Licensing
 
-services-flake is Apache-2.0. A ported module keeps a comment at the top
-naming the file it came from.
+services-flake is MIT and devenv is Apache-2.0. A ported module keeps a comment
+at the top naming the file it came from, and its licence.

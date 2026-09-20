@@ -1,7 +1,7 @@
 # redis, as a NixOS Modular Service.
 #
-# Options ported from services-flake's nix/services/redis.nix, which is
-# Apache-2.0 and itself based on devenv's module. What a modular service adds
+# Options ported from services-flake's nix/services/redis.nix, which is MIT and
+# itself based on devenv's Apache-2.0 module. What a modular service adds
 # is that this says what to run without saying who runs it, so the same module
 # works under dinit, under systemd and under finit.
 #

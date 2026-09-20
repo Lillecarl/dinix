@@ -1,8 +1,8 @@
 # php-fpm, as a NixOS Modular Service.
 #
-# Options ported from services-flake's nix/services/phpfpm.nix, which is
-# Apache-2.0. See services/redis.nix for the shape and PORTING.md for what
-# changes on the way across.
+# Options ported from services-flake's nix/services/phpfpm.nix, which is MIT.
+# See services/redis.nix for the shape and PORTING.md for what changes on the
+# way across.
 #
 # nixpkgs ships a php-fpm modular service of its own, as `php.services.default`
 # in pkgs/development/interpreters/php/service.nix. The `php-upstream`

@@ -6,6 +6,10 @@ Read [PORTING.md](PORTING.md) first. `services/redis.nix` and
 `tests/collections/redis.nix` are the worked pair; `services/postgres.nix` is
 the hard one (sub-service, run-once init, `run-as`).
 
+Two source libraries, both worth reading for the same service:
+`~/Code/services-flake/nix/services/<name>.nix` (MIT) and
+`~/Code/devenv/src/modules/services/<name>.nix` (Apache-2.0).
+
 - Every service dinix authors is a NixOS Modular Service in `services/`. No
   `pkgs` argument: dependencies arrive through `lib.modules.importApply`.
 - `config = lib.mkMerge [ ... ]`, not `//`, when both halves set the service's
