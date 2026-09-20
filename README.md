@@ -496,12 +496,9 @@ expression can know a store path before it is built.
 
 Set `consolidateConfig = false` where store paths are not layers, such as a
 runtime that mounts the closure directly. Each piece is then its own path, and
-changing one service does not rebuild the rest.
-
-**`configData` is the exception**: a modular service's files live inside
-`configDir` either way, because the service description names them by a path
-the builder substitutes. See
-[issue #16](https://github.com/Lillecarl/dinix/issues/16).
+changing one service does not rebuild the rest. A modular service's
+`configData` splits with everything else: the file is already a store path, so
+the service description names it where it is and nothing is copied.
 
 `dev.nix` builds both images and reports on them. It is not imported by
 `default.nix`, so nix2container never reaches a consumer's closure:

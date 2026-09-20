@@ -19,6 +19,10 @@
 let
   inherit (lib) mkOption types;
 
+  # The dinix configuration, under a name a service submodule's own `config`
+  # does not shadow.
+  topConfig = config;
+
   serviceLib = import ./service-lib.nix;
 
   /**
@@ -49,12 +53,21 @@ let
             types.submodule (
               { config, ... }:
               {
-                # Inside configDir, which is where everything dinix generates
-                # lives. The marker is substituted for the store path when
-                # that directory is built: no Nix expression can name a store
-                # path before it exists, and a service description in the same
-                # directory has the same problem. See internal.initSpecPath.
-                config.path = lib.mkDefault "@configDir@/system-services/${servicePrefix}/${config.name}";
+                # Consolidated, the file goes inside configDir with everything
+                # else dinix generates, and the marker is substituted for the
+                # store path when that directory is built: no Nix expression
+                # can name a store path before it exists, and a service
+                # description in the same directory has the same problem. See
+                # internal.initSpecPath.
+                #
+                # Split, the source is already a store path and needs no copy,
+                # so the service reads the file where it is.
+                config.path = lib.mkDefault (
+                  if topConfig.consolidateConfig then
+                    "@configDir@/system-services/${servicePrefix}/${config.name}"
+                  else
+                    toString config.source
+                );
               }
             )
           );
@@ -256,9 +269,11 @@ in
     # configuration that asks for none pays nothing.
     users.enable = lib.mkIf (collectAll "users" != { } || collectAll "groups" != { }) true;
 
-    internal.configDataFiles = lib.concatMapAttrs (
-      name: service: renderConfigData name service
-    ) config.system.services;
+    # Nothing to write when the files are not consolidated: each one is its own
+    # store path and the service description names it directly.
+    internal.configDataFiles = lib.optionalAttrs config.consolidateConfig (
+      lib.concatMapAttrs (name: service: renderConfigData name service) config.system.services
+    );
 
     # Per service rather than over a synthetic root: these walk a service
     # config and read its own `assertions`, `warnings` and `services`, and a
