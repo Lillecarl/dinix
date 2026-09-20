@@ -17,75 +17,111 @@ system.services.tunnel = {
 is where it lives. About ten exist today, `php` among them, and the number
 grows.
 
-If none exists, consider writing one upstream rather than a dinix-only module:
-it is the same work and everyone gets it. What it cannot express yet is the
-part our ports lean on — no user is created, no directory is made, nothing is
-owned, and there is no run-once init — so a module that needs those still
-needs a dinix-specific tree beside it. The interface is new in NixOS 25.11 and
-changing, so track it rather than wrap it.
+If none exists, write one. Every service in `services/` is a modular service,
+and the same file would work under systemd or finit. What the interface cannot
+express yet is the part our ports lean on — no user is created, no directory is
+made and nothing is owned — so a module that needs those carries a
+dinix-specific tree beside the portable half. The interface is new in NixOS
+25.11 and changing, so track it rather than wrap it. Issue #15 collects what is
+missing.
+
+`tests/collections/php-upstream.nix` runs nixpkgs' own php-fpm module
+unmodified, beside `tests/collections/phpfpm.nix`, which runs ours. Two things
+kept ours: a `php.ini` of one's own, and a pool socket under the state
+directory. A path inside a generated configuration file is fixed when the file
+is generated, so it cannot be relocatable.
 
 # Porting a service from services-flake
 
 [services-flake](https://github.com/juspay/services-flake) has about thirty
 services written as Nix modules. Their supervisor is process-compose and ours
-is dinit, so a port keeps the options and changes the last step. `redis.nix`
-and `tests/collections/redis.nix` are the worked example; read them beside
-`services-flake/nix/services/redis.nix` and the mapping is visible.
+is dinit, so a port keeps the options and changes the last step.
+`services/redis.nix` and `tests/collections/redis.nix` are the worked example;
+read them beside `services-flake/nix/services/redis.nix` and the mapping is
+visible.
 
-A port is four files, two of which already exist.
+A port is two files, and nothing else is edited.
 
 ## 1. The module
 
-`<service>.nix` at the top of this repository:
+`services/<service>.nix`, a modular service:
 
 ```nix
-let
-  inherit (import ./service-lib.nix) multiService;
-in
-multiService "redis" (
-  { name, config, pkgs, lib, ... }:
-  {
-    options = {
-      # One for one with the services-flake module.
-      package = lib.mkPackageOption pkgs "redis" { };
-      port = lib.mkOption { type = lib.types.port; default = 6379; };
-    };
+# Dependencies arrive through importApply, because a modular service takes no
+# pkgs argument.
+{ redis }:
 
-    config.outputs = {
-      dirs.${config.dataDir}.mode = "0700";
-      services.${config.serviceName} = {
-        type = "process";
-        command = "${lib.getExe' config.package "redis-server"} ${configFile}";
-        dinix.critical = lib.mkDefault false;
-      };
-    };
+{ config, options, lib, ... }:
+let
+  cfg = config.redis;
+in
+{
+  _class = "service";
+
+  options.redis = {
+    # One for one with the services-flake module.
+    package = lib.mkOption { type = lib.types.package; default = redis; };
+    port = lib.mkOption { type = lib.types.port; default = 6379; };
+    dataDir = lib.mkOption { type = lib.types.str; };
+  };
+
+  config = {
+    process.argv = [ (lib.getExe' cfg.package "redis-server") "--dir" cfg.dataDir ];
   }
-)
+  // lib.optionalAttrs (options ? dinit) {
+    redis.dataDir = lib.mkDefault config.dinit.stateDir;
+    dinit.dirs.${cfg.dataDir}.mode = "0700";
+    dinit.service.dinix.critical = lib.mkDefault false;
+  };
+}
 ```
 
-`multiService` supplies `enable`, `dataDir` and `serviceName`, makes the
-option an attribute set of instances, and collects every enabled instance's
-`outputs` into the top-level `services`, `dirs` and `mustExist`. Declare the
-service's own options and set `outputs`. Nothing else.
+`process.argv` is the portable half: what to run, and nothing about who runs
+it. Anything dinit-specific goes behind `options ? dinit`, so the module still
+evaluates where dinit is absent — that is how upstream's php module carries its
+systemd and finit sections.
 
-Then add the file to `imports` in `options.nix`.
+Under `dinit` the module gets `stateDir`, which is where this service should
+keep what it writes, and `dirs`, `mustExist` and `service` — settings written
+straight into the dinit service description.
+
+**`config` is `lib.mkMerge [ ... ]` when both halves set the service's own
+option.** `//` is a shallow merge, so a `dinit` half setting `redis.dataDir`
+replaces a first half setting `redis.extraConfig` outright, and the setting
+vanishes with no error. `services/phpfpm.nix` shows the merge form.
+
+A file the program reads is a `configData` entry: the module names the content,
+the service manager decides where the file lands, and the module reads the
+place back out of `configData.<name>.path`. See `services/nginx.nix`.
+
+A process that belongs to another is a sub-service — `services.init` in
+`services/postgres.nix` — which dinix renders as `<service>-<sub>`. A
+sub-service is ownership and nothing more: it creates no dependency, so state
+the order with `depends-on`.
 
 ## 2. The collection
 
 `tests/collections/<service>.nix` is an ordinary dinix configuration, plus a
-`collection` attribute saying what to ask the running container:
+`collection` attribute saying what to ask the running container. One
+`system.services` entry per instance:
 
 ```nix
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
+let
+  redisService = lib.modules.importApply ../../services/redis.nix {
+    inherit (pkgs) redis;
+  };
+  main = config.system.services.redis-main.redis;
+in
 {
-  redis.main.enable = true;
+  system.services.redis-main.imports = [ redisService ];
 
   collection = {
-    writable = [ config.redis.main.dataDir ];
+    writable = [ main.dataDir ];
     checks = [
       {
         name = "redis answers on its TCP port";
-        command = "${pkgs.redis}/bin/redis-cli -p 6379 ping";
+        command = "${pkgs.redis}/bin/redis-cli -p ${toString main.port} ping";
         expect = "PONG";
       }
     ];
@@ -99,17 +135,14 @@ collections.<service>.<mode>` runs it in one of four modes — `root` and
 and a port passes in all four. Nothing else needs editing, and no Python is
 written.
 
-`import ./.` answers one attribute per mode — `rootContainer`,
-`nobodyContainer`, `noContainer` — for the same modules, so differences
-between environments live in the evaluation, where a build either works or
-fails loudly. The two vm test modes run the one output without a container
-twice: as root and as an ordinary user. {option}`mode` names which output a
-configuration is; a collection reads it where privilege differs by mode,
-which is run-as and nothing else: only the rootContainer output sets it,
-because an unprivileged dinit cannot change user at all.
+{option}`privileged` says whether dinit will be root, and a collection reads it
+where that changes the configuration — which is `run-as` and nothing else,
+because an unprivileged dinit cannot change user at all. Whether a run is
+containerized is the test driver's business, not the configuration's.
 
-A data directory defaults to `$DINIX_STATE_DIR/<service>/<instance>`, or
-`/var/lib/...` when the variable is unset. The containers run writable, with
+A data directory defaults to {option}`dinit.stateDir`, which is
+`$DINIX_STATE_DIR/<service>`, or `/var/lib/<service>` when the variable is
+unset. The containers run writable, with
 a tmpfs for `/run` and one for the state directory, and dinix-init makes the
 data directories on it; the vm modes run no dinix-init at all, so the driver
 makes the `collection.writable` paths on the guest instead.
@@ -148,19 +181,20 @@ Two things about a check, both measured by getting them wrong:
 
 | services-flake | dinix |
 | --- | --- |
-| `services.<s>.<name>` | `<s>.<name>` |
+| `services.<s>.<name>` | `system.services.<s>-<name>` |
 | `dataDir`, relative to the project | `dataDir`, an absolute path in a container |
-| a start script that `mkdir -p`s `dataDir` | `outputs.dirs.<dataDir>` |
-| `command = <script>` | `outputs.services.<n>.command`, the program itself |
-| `depends_on.<x>.condition` | `depends-on` for hard, `waits-for` for soft |
+| a start script that `mkdir -p`s `dataDir` | `dinit.dirs.<dataDir>` |
+| `command = <script>` | `process.argv`, the program itself |
+| a generated config file | `configData.<name>`, read back as `.path` |
+| `depends_on.<x>.condition` | `dinit.service.depends-on`, or `waits-for` for soft |
 | `readiness_probe` | a `collection.checks` entry — dinit has no probe |
-| `availability.restart = "on_failure"` | `dinix.critical = false` |
+| `availability.restart = "on_failure"` | `dinit.service.dinix.critical = false` |
 | `namespace` | nothing; dinit has no namespaces |
 
 Six things change on the way across, and they are the whole of the work:
 
 - **A state path goes on the command line, never inside a config file.**
-  `dataDir` is the literal string `${DINIX_STATE_DIR:-/var/lib}/<svc>/<inst>`,
+  `dataDir` is the literal string `${DINIX_STATE_DIR:-/var/lib}/<service>`,
   and dinit expands it when it loads the service — which is what lets one
   store path run in a container, uncontained and under systemd. dinit
   substitutes `command`, `stop-command`, `working-dir`, `env-file`,
@@ -176,8 +210,8 @@ Six things change on the way across, and they are the whole of the work:
 - **No shell.** services-flake wraps most services in a `writeShellApplication`
   to make a directory and export a variable. dinix makes directories with
   `dirs` before any service starts, and sets variables in `env-file`, so
-  `command` is the program itself. A port that still needs a wrapper has found
-  something worth saying out loud.
+  `process.argv` is the program itself. A port that still needs a wrapper has
+  found something worth saying out loud.
 - **The data directory is declared**, not a subdirectory of wherever the
   developer ran the command. Absolute paths throughout, and the collection
   names every path that has to be writable, so a read-only deployment knows
@@ -193,6 +227,13 @@ Six things change on the way across, and they are the whole of the work:
   does, and so does postgres's `initdb`. dinit's `run-as` changes user before
   exec, so the process never sees root: the source module's privilege story is
   the collection's to tell, and `nobody` is in the user database dinix writes.
+
+  **`run-as` is not always the answer.** A program that drops privilege itself
+  wants root to begin with, and taking it away first breaks it. php-fpm opens
+  its error log by path — `/proc/self/fd/2`, which is dinit's own log — and a
+  file dinit made as root refuses the account the service would become:
+  `failed to open error_log`, exit 78. Let such a program keep root and use its
+  own user directive, as memcached's `-u` and php-fpm's `user` do.
 - **Secrets and passwords are mounted**, never rendered into the store.
   Everything dinix generates is world-readable. See the host key note in
   README.md.
@@ -206,16 +247,14 @@ MongoDB all want one, and a shell is the usual answer.
 Use `dinix-unless` instead, which is {option}`unlessPackage`:
 
 ```nix
-outputs.services."${config.serviceName}-init" = {
-  type = "scripted";
-  command = toString [
-    (lib.getExe config.unlessPackage)
-    "${config.dataDir}/PG_VERSION"          # the marker
-    (lib.getExe' config.package "initdb")   # run only if it is absent
-    "-D" config.dataDir
-  ];
-};
-outputs.services.${config.serviceName}.depends-on = [ "${config.serviceName}-init" ];
+services.init.process.argv = [
+  (lib.getExe dinix-unless)
+  "${cfg.pgData}/PG_VERSION"             # the marker
+  (lib.getExe' cfg.package "initdb")     # run only if it is absent
+  "--pgdata" cfg.pgData
+];
+services.init.dinit.service.type = "scripted";
+dinit.service.depends-on = [ "${name}-init" ];
 ```
 
 It execs the program when the marker is missing and exits 0 when it is there,

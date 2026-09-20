@@ -475,7 +475,6 @@ in
     ./cacert.nix
     ./openssh.nix
     ./modular.nix
-    ./postgres.nix
     ./users.nix
   ];
 
