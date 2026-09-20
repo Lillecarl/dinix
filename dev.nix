@@ -49,10 +49,10 @@ let
   imageFor =
     consolidate:
     let
-      dinix = (import ./. {
+      dinix = import ./. {
         inherit pkgs;
         modules = modules ++ [ { consolidateConfig = consolidate; } ];
-      }).rootContainer;
+      };
     in
     nix2container.buildImage {
       name = "dinix-${if consolidate then "consolidated" else "split"}";
@@ -109,14 +109,14 @@ let
       podmanUser ? "",
     }:
     let
-      dinix = (import ./. {
+      dinix = import ./. {
         inherit pkgs;
         modules = [
           ./tests/container.nix
           { _module.args.clientKey = clientKey; }
         ]
         ++ extraModules;
-      }).rootContainer;
+      };
 
       image = nix2container.buildImage {
         inherit name;
@@ -187,32 +187,41 @@ let
   collectionTest =
     name: testMode:
     let
-      output = {
-        root = "rootContainer";
-        user = "nobodyContainer";
-        vm-root = "noContainer";
-        vm-user = "noContainer";
-      }."${testMode}";
+      # Which mode this run evaluates for. It decides one thing — whether a
+      # collection may use run-as — and nothing else; where state lives is a
+      # runtime question now, answered by DINIX_STATE_DIR when dinit loads.
+      dinixMode =
+        {
+          root = "rootContainer";
+          user = "nobodyContainer";
+          vm-root = "noContainer";
+          vm-user = "noContainer";
+        }
+        ."${testMode}";
       isVm = lib.hasPrefix "vm-" testMode;
 
-      # The state directory the evaluation baked in, so the vm driver puts
-      # everything a run creates — not just service data — under it. The
-      # vm-user mode runs dinit as nobody on the guest, which cannot write
-      # the /var/lib default, so building it without the variable set is
-      # an error rather than a test that cannot pass.
-      inherit (import ./service-lib.nix) stateDir;
-
-      outputs = import ./. {
+      dinix = import ./. {
         inherit pkgs;
         modules = [
           ./tests/collection-options.nix
           (./tests/collections + "/${name}.nix")
-        ]
-        ++ lib.optional (testMode == "vm-user" && stateDir == "/var/lib") (
-          throw "The vm-user test runs dinit as nobody, which cannot write the default /var/lib state. Export DINIX_STATE_DIR naming a directory first; it is read where this builds."
-        );
+          { mode = dinixMode; }
+        ];
       };
-      dinix = outputs.${output};
+
+      # Where this run puts state. Not /var/lib, so that a passing test means
+      # DINIX_STATE_DIR really was substituted at startup rather than the
+      # built-in default happening to work.
+      testStateDir = "/tmp/dinix-state";
+
+      # A collection names a data directory the way a service does, so its
+      # checks and its writable paths carry the same unexpanded
+      # ${DINIX_STATE_DIR:-/var/lib} that dinit expands at load. Nothing
+      # expands it for a `podman exec`, which takes an argument list and no
+      # shell, so it is resolved here — where both the template and the value
+      # this run chose are known. The driver stays free of a second expander.
+      resolve = lib.replaceStrings [ (import ./service-lib.nix).stateDir ] [ testStateDir ];
+      resolveCheck = check: check // { command = resolve check.command; };
 
       image = nix2container.buildImage (
         {
@@ -242,14 +251,13 @@ let
         collection = name;
         mode = testMode;
         configDir = "${dinix.config.configDir}";
-        inherit (dinix.config.collection) services checks;
-        # /run holds dinit's control socket, which a read-only container
-        # cannot take on its root filesystem. A guest has a writable /run
-        # of its own, so only the container modes mount one.
-        tmpfs = lib.optional (!isVm) "/run" ++ dinix.config.collection.tmpfs;
-        # The state directory every mode puts state under: mounted once
-        # for the containers, made on the guest for the vm modes.
-        inherit stateDir;
+        inherit (dinix.config.collection) services;
+        checks = map resolveCheck dinix.config.collection.checks;
+        writable = map resolve dinix.config.collection.writable;
+        # The driver exports this into dinit's environment; dinit substitutes
+        # service descriptions with it and dinix-init expands init.spec the
+        # same way.
+        stateDir = testStateDir;
         # The vm-user mode runs dinit --user; every other mode runs the
         # container entrypoint, on the guest directly where there is no
         # container. Only the wrapper a mode runs is referenced, so no

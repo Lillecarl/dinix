@@ -12,11 +12,14 @@ let
 
   # Whether there is any init work, and so a dinix-init service to order
   # against. Read from inside the service submodule, so it must not depend on
-  # config.services. No init runs uncontainerized at all: without a container
-  # there is no read-only root and no volume to mount, so making state is the
-  # environment's own job and these go unenforced.
-  needsInit =
-    config.mode != "noContainer" && (config.dirs != { } || config.mustExist != { });
+  # config.services.
+  #
+  # Every mode, uncontained included. An uncontained run is the mode with the
+  # least around it to make directories, not the most: no runtime mounts a
+  # volume, so if dinix does not make the state directory nothing does. It
+  # works unprivileged because the paths expand at startup and dinix-init skips
+  # an owner or a mode that already holds.
+  needsInit = config.dirs != { } || config.mustExist != { };
 
   inherit (lib)
     attrNames
@@ -461,6 +464,7 @@ in
     ./memcached.nix
     ./nginx.nix
     ./openssh.nix
+    ./phpfpm.nix
     ./redis.nix
     ./users.nix
   ];
@@ -474,23 +478,30 @@ in
       ];
       default = "rootContainer";
       description = ''
-        Which environment this configuration is evaluated for. A dinix
-        instantiation answers one attribute per mode; see default.nix.
+        Which environment this configuration is for. An ordinary option: set
+        it in your own module.
 
-        `rootContainer` runs dinit as root in a container: dinix-init makes
-        every directory, and services may change user with run-as.
+        **It decides one thing only: whether a service may drop privilege.**
+        `run-as` needs a dinit running as root, and a service description
+        cannot ask at startup whether that is so — `run-as` is not one of the
+        settings dinit substitutes. Everything else about an environment is
+        decided at runtime and needs no mode: the state directory expands from
+        `DINIX_STATE_DIR`, and dinix-init skips an owner or a mode that already
+        holds.
 
-        `nobodyContainer` runs the same container as nobody: dinix-init
-        makes directories but can own none, so data directories arrive
-        owned already — the runtime mounts them that way, as Kubernetes
-        does with fsGroup — and services run as the container user, never
-        through run-as, which an unprivileged dinit cannot do.
+        `rootContainer` runs dinit as root in a container, so a service may
+        name `run-as`.
 
-        `noContainer` runs dinit directly, as whatever user starts it:
-        no dinix-init runs at all, so {option}`dirs` and
-        {option}`mustExist` go unenforced and the environment provides
-        state instead, under $DINIX_STATE_DIR. Nothing here names a user,
-        so the same output serves root and unprivileged runs alike.
+        `nobodyContainer` runs the same container unprivileged. Nothing may
+        use `run-as`; the runtime already chose the user.
+
+        `noContainer` runs dinit directly, under systemd or by hand, as
+        whoever starts it. dinix-init still makes {option}`dirs`, and this is
+        the mode that needs it most: no runtime mounts a volume here, so if
+        dinix does not make the state directory then nothing does.
+
+        dinix reads this nowhere itself. A collection reads it to decide
+        `run-as`, which is a deployment question and so the consumer's.
       '';
     };
 

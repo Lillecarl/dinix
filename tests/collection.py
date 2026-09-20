@@ -7,10 +7,11 @@ collection and its checks in Nix, and `dev.nix` passes them here as
 
 Four modes, one per reasonable environment (`vms.settings["mode"]`):
 
-    root     the image runs as root under podman, read-only, tmpfs where
-             something must be written
-    user     the same image runs as nobody: no chown, no run-as, and the
-             services run as the container user
+    root     the image runs as root under podman, tmpfs for /run and
+             for the state directory
+    user     the same image runs as nobody: a podman tmpfs arrives 1777,
+             so no chown, no run-as, and the services run as the
+             container user
     vm-root  no container at all; dinit runs as root on the guest, state
              under $DINIX_STATE_DIR, no dinix-init
     vm-user  no container and no privilege; dinit --user runs as an
@@ -25,10 +26,13 @@ What every mode gets, without asking:
     quiet     no service failed while all that happened
     sigterm   SIGTERM stops dinit well inside a grace period
 
-The container modes get the shape Kubernetes gives one: a read-only root
-filesystem, tmpfs where something must be written, and the user database
-mounted a file at a time.  A check runs through `podman exec` with an
-absolute store path, so a collection image needs no shell.
+The containers run writable. The test proves services start and answer;
+a deployment with a read-only root mounts the writable paths itself —
+/run always, the declared ones per service — and nothing here second-guesses
+it. What the container mounts is a tmpfs for /run, a tmpfs for the state
+directory, and the user database a file at a time. A check runs through
+`podman exec` with an absolute store path, so a collection image needs no
+shell.
 """
 
 from uml_runner import Machine, MachineError, Machines, run_test
@@ -50,17 +54,25 @@ VM_USER = "nobody"
 # /etc would hide the /etc/hosts and /etc/resolv.conf the runtime puts there.
 ETC = ["passwd", "group", "shadow", "nsswitch.conf"]
 
-# podman kills a container that has not stopped within its own default of 10s,
-# and Kubernetes waits 30.  Either is a long way from what dinit needs.
-STOP_BUDGET_MS = 5000
+# What this catches is dinit ignoring SIGTERM, which shows up as the full
+# `--time 30` wait and then a kill. It is not a benchmark: the number includes
+# podman's own work and whatever else shares the processor, and the matrix runs
+# guests in parallel. 10s is podman's own kill deadline, so it is the threshold
+# where behaviour actually changes rather than a figure picked to look tight.
+#
+# Measured on an idle machine: 219ms uncontained, 2.2s under podman. The same
+# container measured 5.1s with three other guests running, which failed a 5s
+# bound that was testing the machine's load rather than dinit.
+STOP_BUDGET_MS = 10_000
 
 
 def run_args(settings: dict, state_mount: str) -> str:
     mounts = [
         f"--volume {settings['configDir']}/etc/{etc}:/etc/{etc}:ro" for etc in ETC
     ] + [
-        # /run holds dinit's control socket, which a read-only container
-        # cannot take on its root filesystem.
+        # /run holds dinit's control socket, and the state directory everything
+        # the services keep. Both arrive as tmpfs: ephemeral like an emptyDir,
+        # and 1777, which is what lets the nobody container write them too.
         "--tmpfs /run",
         state_mount,
     ]
@@ -70,7 +82,12 @@ def run_args(settings: dict, state_mount: str) -> str:
             # The guest's own network. netavark and nftables are not what a
             # service port is about.
             "--network host",
-            "--read-only",
+            # dinit substitutes this when it loads a service description, and
+            # dinix-init expands it over init.spec, so one image puts its state
+            # wherever the deployment says. Naming a path that is not the
+            # /var/lib default is deliberate: it is what proves the
+            # substitution happened rather than the default surviving.
+            f"--env DINIX_STATE_DIR={settings['stateDir']}",
             *mounts,
             # Empty when the container runs as root, which is podman's default.
             settings["podmanUser"] and f"--user {settings['podmanUser']}",
@@ -112,18 +129,12 @@ async def test(vms: Machines) -> None:
 async def start_container(node: Machine, settings: dict) -> SimpleNamespace:
     dinitctl = settings["dinitctl"]
 
-    # One state mount, which dinix-init populates: plain tmpfs where the
-    # container runs as root, and a named volume with :U where it runs as
-    # nobody — the runtime chowns it on creation, the way Kubernetes does
-    # emptyDir with fsGroup. No podman flag owns a tmpfs mount. The guest
-    # is thrown away with the test, so the volume goes with it and nothing
-    # cleans it.
-    if settings["podmanUser"]:
-        volume = f"dinix-{settings['collection']}-state"
-        await node.succeed(f"podman volume create {volume}", timeout=60)
-        state_mount = f"--volume {volume}:{settings['stateDir']}:U"
-    else:
-        state_mount = f"--tmpfs {settings['stateDir']}"
+    # One state mount, which dinix-init populates: a tmpfs either way. It
+    # arrives 1777, so the nobody container makes its data directories on it
+    # like root does; dinix-init stats before chowning and skips what already
+    # belongs to the account, which is everything here. The guest is thrown
+    # away with the test, so nothing cleans it.
+    state_mount = f"--tmpfs {settings['stateDir']}"
 
     await node.succeed(settings["copyToPodman"], timeout=900)
     await node.succeed(
@@ -262,13 +273,14 @@ async def start_vm(node: Machine, settings: dict) -> SimpleNamespace:
     # filesystem refuses a file one user made to another, so the log, the
     # pid file and the socket are written by whoever runs dinit, never by
     # the driver.
+    # Only the state directory itself, and only because dinit's own socket and
+    # log go in it before any service runs. Everything under it is dinix-init's
+    # to make, in this mode as in the containers: a driver that made the data
+    # directories first would hide the failure this test exists to catch, a
+    # service whose directory dinix never declared.
     await node.succeed(f"mkdir --parents {state}", timeout=60)
-    for path in settings["tmpfs"]:
-        await node.succeed(f"mkdir --parents {path}", timeout=60)
     if as_user:
         await node.succeed(f"chown {VM_USER} {state}", timeout=60)
-        for path in settings["tmpfs"]:
-            await node.succeed(f"chown -R {VM_USER} {path}", timeout=60)
 
     if as_user:
         # dinit --user takes no container flags, and the wrapper bakes in
@@ -280,17 +292,19 @@ async def start_vm(node: Machine, settings: dict) -> SimpleNamespace:
         become = f"setpriv --reuid {uid} --regid {gid} --clear-groups -- "
         start = (
             f"{become}/bin/sh -c 'echo $$ > {pidfile};"
+            f" export DINIX_STATE_DIR={state};"
             f" exec {dinit} --user --socket-path {sock} > {log} 2>&1' & echo $!"
         )
         ctl = f"{become}env DINIT_SOCKET_PATH={sock} {dinitctl}"
-        run = lambda cmd: f"{become}{cmd}"
+        run = lambda cmd: f"{become}env DINIX_STATE_DIR={state} {cmd}"
     else:
         start = (
             f"/bin/sh -c 'echo $$ > {pidfile};"
+            f" export DINIX_STATE_DIR={state};"
             f" exec {dinit} --socket-path {sock} > {log} 2>&1' & echo $!"
         )
         ctl = f"env DINIT_SOCKET_PATH={sock} {dinitctl}"
-        run = lambda cmd: cmd
+        run = lambda cmd: f"env DINIX_STATE_DIR={state} {cmd}"
 
     out = await node.succeed(start, timeout=60)
     # The launch output is the only place a failure to start speaks: a

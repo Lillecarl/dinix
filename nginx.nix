@@ -14,8 +14,13 @@ multiService "nginx" (
   let
     inherit (lib) mkOption types;
 
+    # Every path here is relative, and resolves against the prefix `-p` names
+    # on the command line. It has to be: nginx reads this file itself and
+    # knows nothing of dinit's substitution, so an absolute dataDir would
+    # arrive as a literal ${DINIX_STATE_DIR...}. The prefix is on the command
+    # line, which dinit does substitute. See PORTING.md.
     configFile = pkgs.writeText "nginx-${config.serviceName}.conf" ''
-      pid ${config.dataDir}/nginx/nginx.pid;
+      pid nginx/nginx.pid;
       error_log stderr;
       daemon off;
 
@@ -28,16 +33,22 @@ multiService "nginx" (
         # The one writable place a container gives nginx. nginx makes the
         # `nginx` directory itself at startup, so it needs no `dirs` entry of
         # its own.
-        client_body_temp_path ${config.dataDir}/nginx/;
-        proxy_temp_path ${config.dataDir}/nginx/;
-        fastcgi_temp_path ${config.dataDir}/nginx/;
-        scgi_temp_path ${config.dataDir}/nginx/;
-        uwsgi_temp_path ${config.dataDir}/nginx/;
+        client_body_temp_path nginx/;
+        proxy_temp_path nginx/;
+        fastcgi_temp_path nginx/;
+        scgi_temp_path nginx/;
+        uwsgi_temp_path nginx/;
 
         include ${config.defaultMimeTypes};
 
         server {
           listen ${toString config.port};
+          # Named rather than inherited. nginx resolves a relative `root`
+          # against the prefix, and the prefix is the data directory here, so
+          # the default `html` would look for pages among the state and answer
+          # 404. This is content, so it is a store path and needs no
+          # substitution.
+          root ${config.root};
         }
         ${config.httpConfig}
       }
@@ -57,6 +68,20 @@ multiService "nginx" (
         default = 8080;
         description = ''
           The TCP port the generated server block accepts connections on.
+        '';
+      };
+
+      root = mkOption {
+        type = types.str;
+        default = "${config.package}/html";
+        defaultText = lib.literalExpression "\"\${package}/html\"";
+        description = ''
+          The document root the generated server block serves.
+
+          The default is the package's own placeholder page, which is what
+          nginx serves out of the box. Point it at your own content, or leave
+          it and add a `server` block of your own through
+          {option}`httpConfig`.
         '';
       };
 
@@ -102,19 +127,27 @@ multiService "nginx" (
 
       outputs.services.${config.serviceName} = {
         type = "process";
-        # No wrapper and no shell. services-flake runs `nginx -p "$(pwd)"` and
-        # symlinks the configuration into the data directory; every path this
-        # configuration names is absolute, so the prefix is the compiled-in
-        # one and `-c` takes the store path as it is. `daemon off` lives in
-        # the configuration only: passing it on the command line as well with
-        # `-g "daemon off;"` makes nginx die with `"daemon" directive is
-        # duplicate`. Measured against nginx 1.30.4.
+        # No wrapper and no shell. services-flake runs `nginx -p "$(pwd)"`;
+        # this names the prefix outright, which is also what lets every path
+        # in the configuration be relative and so survive dinit's
+        # substitution. `daemon off` lives in the configuration only: passing
+        # it on the command line as well with `-g "daemon off;"` makes nginx
+        # die with `"daemon" directive is duplicate`. Measured against nginx
+        # 1.30.4.
         #
-        # `-e` names a file on the data directory rather than /dev/stderr:
-        # the errors nginx writes before the configuration's own `error_log`
-        # takes effect never reached the collected stream addressed as
-        # /dev/stderr. Measured against nginx 1.30.4 in this container.
-        command = "${lib.getExe' config.package "nginx"} -c ${configFile} -e ${config.dataDir}/nginx-error.log";
+        # `-e` names a file under the prefix rather than /dev/stderr: the
+        # errors nginx writes before the configuration's own `error_log` takes
+        # effect never reached the collected stream addressed as /dev/stderr.
+        # Measured against nginx 1.30.4 in this container.
+        command = toString [
+          (lib.getExe' config.package "nginx")
+          "-p"
+          config.dataDir
+          "-c"
+          configFile
+          "-e"
+          "nginx-error.log"
+        ];
         # services-flake asks process-compose for restart = "on_failure" with
         # at most 5 restarts. See redis.nix for what dinix.critical = false
         # means.

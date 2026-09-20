@@ -55,7 +55,7 @@ Then add the file to `imports` in `options.nix`.
   redis.main.enable = true;
 
   collection = {
-    tmpfs = [ config.redis.main.dataDir ];
+    writable = [ config.redis.main.dataDir ];
     checks = [
       {
         name = "redis answers on its TCP port";
@@ -83,11 +83,19 @@ which is run-as and nothing else: only the rootContainer output sets it,
 because an unprivileged dinit cannot change user at all.
 
 A data directory defaults to `$DINIX_STATE_DIR/<service>/<instance>`, or
-`/var/lib/...` when the variable is unset. The containers mount one state
-directory and dinix-init makes the data directories inside it; the vm modes
-run no dinix-init at all, so the driver makes the `collection.tmpfs` paths
-on the guest instead. Uncontainerized never means the host gets trashed:
-every path a run creates sits under the state directory.
+`/var/lib/...` when the variable is unset. The containers run writable, with
+a tmpfs for `/run` and one for the state directory, and dinix-init makes the
+data directories on it; the vm modes run no dinix-init at all, so the driver
+makes the `collection.writable` paths on the guest instead.
+Uncontainerized never means the host gets trashed: every path a run creates
+sits under the state directory.
+
+`writable` is also the read-only contract: a deployment with a read-only
+root mounts exactly these paths — emptyDirs beside `/run`, which dinit needs
+for its control socket everywhere — and nothing else the services write to.
+Keeping the list complete is what keeps such a deployment working. The test
+itself runs writable; it proves the services start and answer, not that they
+declare every write.
 
 A check needs a client, and the image holds only what the services reference.
 redis-cli rides along in the redis package; most services are not so
@@ -123,16 +131,32 @@ Two things about a check, both measured by getting them wrong:
 | `availability.restart = "on_failure"` | `dinix.critical = false` |
 | `namespace` | nothing; dinit has no namespaces |
 
-Five things change on the way across, and they are the whole of the work:
+Six things change on the way across, and they are the whole of the work:
 
+- **A state path goes on the command line, never inside a config file.**
+  `dataDir` is the literal string `${DINIX_STATE_DIR:-/var/lib}/<svc>/<inst>`,
+  and dinit expands it when it loads the service — which is what lets one
+  store path run in a container, uncontained and under systemd. dinit
+  substitutes `command`, `stop-command`, `working-dir`, `env-file`,
+  `pid-file`, `logfile` and `socket-listen`, and nothing else. A config file
+  is read by the program, which knows nothing of this and would open a
+  directory literally called `${DINIX_STATE_DIR:-/var/lib}`.
+
+  Every service has a way out, and it is the one services-flake already uses:
+  a flag (`redis-server --dir`) or a prefix (`nginx -p`, `php-fpm -p`) with
+  the paths in the config file left relative. **Check what else the prefix
+  moves**: `nginx -p` also moves the default document root, so the port names
+  `root` explicitly — found by a 404 rather than by reading.
 - **No shell.** services-flake wraps most services in a `writeShellApplication`
   to make a directory and export a variable. dinix makes directories with
   `dirs` before any service starts, and sets variables in `env-file`, so
   `command` is the program itself. A port that still needs a wrapper has found
   something worth saying out loud.
-- **The data directory is a volume**, not a subdirectory of wherever the
-  developer ran the command. Absolute paths throughout, and the test mounts it
-  as a tmpfs so `dirs` is under test too.
+- **The data directory is declared**, not a subdirectory of wherever the
+  developer ran the command. Absolute paths throughout, and the collection
+  names every path that has to be writable, so a read-only deployment knows
+  what to mount. dinix-init makes them from `dirs` before anything starts,
+  which is what still puts the modes and owners under test.
 - **No readiness probes.** process-compose polls a service until it answers;
   dinit does not. Where services-flake gates a dependent on
   `condition = "process_healthy"`, dinix has `depends-on`, which waits for the

@@ -31,17 +31,22 @@ in
       '';
     };
 
-    tmpfs = mkOption {
+    writable = mkOption {
       type = types.listOf types.str;
       default = [ ];
       description = ''
-        Writable paths the services need, on top of `/run`.
+        Paths that have to be writable at runtime, on top of `/run`.
 
-        The containers mount one state directory and dinix-init makes
-        these inside it, so this list is what the vm modes make on the
-        guest instead. Either way every path here has to work, which also
-        puts {option}`dirs` under test: a service only starts if dinix-init
-        set the mode the program insists on.
+        dinit's control socket lives in `/run`, which every deployment
+        provides; everything a service keeps lives under one of these. A
+        read-only deployment mounts exactly these — emptyDirs at these paths
+        beside `/run` — so this list staying complete is what keeps such a
+        deployment working.
+
+        **Nothing in the test makes them.** dinix-init does, from
+        {option}`dirs`, in every mode. A driver that made them first would
+        hide the failure this is here to catch: a service whose directory
+        dinix never declared.
       '';
     };
 

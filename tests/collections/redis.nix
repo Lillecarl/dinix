@@ -16,9 +16,10 @@
   };
 
   collection = {
-    # Where each instance keeps its data. dinix makes these; podman supplies
-    # them as tmpfs, so the test also covers dinix-init setting the mode.
-    tmpfs = [
+    # Where each instance keeps its data: the writable paths a read-only
+    # deployment mounts. dinix-init makes them from `dirs` either way, so
+    # the test still covers it setting the mode.
+    writable = [
       config.redis.main.dataDir
       config.redis.sock.dataDir
     ];

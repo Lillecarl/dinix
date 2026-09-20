@@ -6,19 +6,31 @@
 # option. See PORTING.md.
 rec {
   /**
-    Where instances keep their data when no dataDir says otherwise.
+    Where instances keep their data when no `dataDir` says otherwise.
 
-    $DINIX_STATE_DIR when the evaluating environment sets it, /var/lib
-    when it does not. An uncontainerized run has no volume to mount, so
-    the environment names the state directory instead. getEnv is
-    pure-safe: it reads "" outside impure evaluation, so flake consumers
-    keep /var/lib without noticing.
+    **This is a literal string that dinit expands, not a path decided here.**
+    dinit substitutes variables in a service description when it loads it, so
+    `DINIX_STATE_DIR` is read at startup from dinit's own environment and one
+    store path serves every way of running: a rootful container, a rootless
+    one, an uncontained run, a systemd unit. Nothing rebuilds to move state.
+    See `dinit-service(5)`, VARIABLE SUBSTITUTION.
+
+    `dinix-init` does the same expansion over `init.spec`, so the directory it
+    makes and the path the service opens agree. See `dinix-init/src/expand.rs`.
+
+    It cannot be `builtins.getEnv`. That reads the *evaluating* environment,
+    which bakes one mode's path into the store and gives the same commit two
+    different output hashes depending on a variable the consumer never set on
+    purpose. Measured before it was removed: `/var/lib` and `/srv/state` from
+    one revision.
+
+    **A path that ends up inside a configuration file the program reads is not
+    covered**, because the program does the reading and knows nothing of this.
+    Put it on the command line, where dinit substitutes, or use the program's
+    own prefix flag. See PORTING.md.
   */
-  stateDir =
-    let
-      env = builtins.getEnv "DINIX_STATE_DIR";
-    in
-    if env == "" then "/var/lib" else env;
+  stateDir = "\${DINIX_STATE_DIR:-/var/lib}";
+
   /**
     Turn a per-service module into a dinix module offering
     `<serviceName>.<instance>`.

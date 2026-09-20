@@ -23,11 +23,14 @@ multiService "redis" (
       else
         "${config.dataDir}/${config.unixSocket}";
 
+    # Everything except a path. redis reads this file itself and knows nothing
+    # of dinit's substitution, so a `dir` or `unixsocket` line here would hold
+    # the literal ${DINIX_STATE_DIR...}. Those two go on the command line,
+    # which dinit does substitute, and a command-line option overrides the
+    # file. See PORTING.md.
     configFile = pkgs.writeText "redis-${name}.conf" ''
       port ${toString config.port}
-      dir ${config.dataDir}
       ${optionalString (config.bind != null) "bind ${config.bind}"}
-      ${optionalString (socket != null) "unixsocket ${socket}"}
       ${optionalString (socket != null) "unixsocketperm ${toString config.unixSocketPerm}"}
       ${config.extraConfig}
     '';
@@ -83,9 +86,24 @@ multiService "redis" (
       outputs.services.${config.serviceName} = {
         type = "process";
         # No wrapper and no shell. services-flake needs a start script to make
-        # the data directory first; dinix-init has already made it, and `dir`
-        # is in the generated configuration rather than on the command line.
-        command = "${lib.getExe' config.package "redis-server"} ${configFile}";
+        # the data directory first; dinix-init has already made it.
+        #
+        # The paths are here rather than in the configuration file because
+        # dinit substitutes a command line and redis does not substitute its
+        # own configuration. Each path stays one argument, so the default
+        # word-splitting rule leaves it alone.
+        command = toString (
+          [
+            (lib.getExe' config.package "redis-server")
+            configFile
+            "--dir"
+            config.dataDir
+          ]
+          ++ lib.optionals (socket != null) [
+            "--unixsocket"
+            socket
+          ]
+        );
         # services-flake asks process-compose for restart = "on_failure" with
         # at most 5 restarts. dinix.critical = false is the nearest thing: boot
         # waits for the service rather than depending on it, so it may die and

@@ -48,9 +48,9 @@ in
   };
 
   collection = {
-    # The read-only root gives way here: dinix-init makes the data directory
-    # on this tmpfs, and the temp paths go inside it.
-    tmpfs = [ config.nginx.main.dataDir ];
+    # The writable paths a read-only deployment mounts: dinix-init makes the
+    # data directory from `dirs`, and the temp paths go inside it.
+    writable = [ config.nginx.main.dataDir ];
 
     packages = [ pkgs.curl ];
 
