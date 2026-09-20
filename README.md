@@ -331,8 +331,58 @@ start script to make that directory, and dinix has already made it before any
 service starts.
 
 This is the worked example for [PORTING.md](PORTING.md). The rest of that
-catalogue — PostgreSQL, MySQL, MongoDB, Nginx and about thirty others — is
-mostly the same work.
+catalogue — MySQL, MongoDB and about thirty others — is mostly the same work.
+
+## PostgreSQL
+
+`postgres.<instance>` runs a cluster, with the options services-flake gives
+it:
+
+```nix
+postgres.main = {
+  enable = true;
+  port = 5432;
+  settings.log_connections = true;
+};
+```
+
+Two services: `postgres-<instance>-init` runs `initdb` once, and
+`postgres-<instance>` depends on it.
+
+**Settings go on the command line, not into a `postgresql.conf`.** Each one
+becomes a `-c name=value` argument, so nothing is written into `PGDATA` at
+startup — which is what services-flake needs a shell for — and the state
+directory reaches postgres through the substitution dinit already does.
+`unix_socket_directories` is therefore not settable through `settings`; use
+`socketDir`.
+
+**`dataDir` is the instance directory, and `PGDATA` is `${dataDir}/data`.**
+services-flake uses `dataDir` as `PGDATA` directly, which cannot work here:
+`initdb` refuses a directory that is not empty, and the socket directory has
+to live on the same volume.
+
+`initdb` runs under [`dinix-unless`](PORTING.md), which execs it only while
+`PG_VERSION` is absent — so the dependency stays a real one and a first run
+that genuinely fails still stops the server.
+
+`term-signal = INT` is postgres's fast shutdown: it rolls back and disconnects
+rather than waiting for clients to leave. Without it a container waits out its
+grace period whenever anything is connected.
+
+**postgres refuses to run as root**, and so does `initdb`. Where dinit is
+root, give both services `run-as` and own the directories to that account; the
+collection in `tests/collections/postgres.nix` shows the shape.
+
+**A postgres image needs `/bin/sh`**, which no other dinix service does.
+`initdb` runs `"<bindir>/postgres" -V` through `popen` to check the server it
+is about to initialise, and `popen` is glibc running `/bin/sh -c`. Without one
+it fails with `could not execute command … No such file or directory`, which
+names postgres rather than the shell and sends the reader looking in the wrong
+place. busybox is enough.
+
+Not ported yet: `createDatabase`, `initialDatabases` and `initialScript`. All
+three run SQL through `psql` after the server is up, which is a second
+question — see [issue #12](https://github.com/Lillecarl/dinix/issues/12).
 
 ## Memcached
 

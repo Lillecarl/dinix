@@ -143,9 +143,17 @@ rec {
       options.${serviceName} = mkOption {
         # submoduleWith, not submodule: pkgs reaches a dinix module through
         # specialArgs, and a plain submodule does not inherit those.
+        #
+        # `dinix` is the whole top-level configuration, under a name that does
+        # not collide with the instance's own `config`. A port needs it for
+        # the options that belong to the configuration rather than to one
+        # instance -- `unlessPackage`, for one.
         type = types.attrsOf (
           types.submoduleWith {
-            specialArgs = { inherit pkgs; };
+            specialArgs = {
+              inherit pkgs;
+              dinix = config;
+            };
             modules = [
               base
               mod
