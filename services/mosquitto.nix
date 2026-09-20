@@ -3,7 +3,7 @@
 # Options ported from devenv's src/modules/services/mosquitto.nix, which is
 # Apache-2.0. See services/redis.nix for the shape and PORTING.md for what
 # changes on the way across.
-{ mosquitto, coreutils }:
+{ mosquitto }:
 
 {
   config,
@@ -89,8 +89,9 @@ in
         The file goes in {option}`mosquitto.dataDir`, and the way it gets
         there is worth knowing: mosquitto takes `persistence_location` in its
         configuration file and nowhere else, so a state path cannot reach it —
-        see PORTING.md. Left unset it writes to the working directory, so a
-        persistent broker runs under `env --chdir`.
+        see PORTING.md. Left unset it writes to the working directory, which
+        the service manager does substitute: `working-dir` under dinit,
+        `WorkingDirectory` under systemd.
       '';
     };
 
@@ -113,20 +114,11 @@ in
         ${cfg.extraConfig}
       '';
 
-      # `env --chdir` and not the service manager's own working directory
-      # setting: this stays one portable `process.argv`, and dinit-check
-      # refuses a `working-dir` that does not exist yet — which a directory
-      # made at startup never does at build time.
-      process.argv =
-        lib.optionals cfg.persistence [
-          (lib.getExe' coreutils "env")
-          "--chdir=${cfg.dataDir}"
-        ]
-        ++ [
-          (lib.getExe cfg.package)
-          "-c"
-          config.configData."mosquitto.conf".path
-        ];
+      process.argv = [
+        (lib.getExe cfg.package)
+        "-c"
+        config.configData."mosquitto.conf".path
+      ];
     }
 
     (lib.optionalAttrs (options ? dinit) {
@@ -139,7 +131,10 @@ in
       # recursion. mkIf is decided after the shape is.
       dinit.dirs = lib.mkIf cfg.persistence { ${cfg.dataDir}.mode = "0700"; };
 
-      dinit.service.dinix.critical = lib.mkDefault false;
+      dinit.service = {
+        working-dir = lib.mkIf cfg.persistence cfg.dataDir;
+        dinix.critical = lib.mkDefault false;
+      };
     })
   ];
 

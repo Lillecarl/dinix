@@ -221,7 +221,8 @@ Three things about a check, each measured by getting it wrong:
 | a start script that `mkdir -p`s `dataDir` | `dinit.dirs.<dataDir>` |
 | `command = <script>` | `process.argv`, the program itself |
 | a generated config file | `configData.<name>`, read back as `.path` |
-| an exported variable, or a `cd` | `env VAR=… ` / `env --chdir=…` in `process.argv` |
+| an exported variable | `env VAR=…` in `process.argv` |
+| a `cd` in the start script | `dinit.service.working-dir` |
 | `depends_on.<x>.condition` | `dinit.service.depends-on`, or `waits-for` for soft |
 | `readiness_probe` | a `collection.checks` entry — dinit has no probe |
 | `availability.restart = "on_failure"` | `dinit.service.dinix.critical = false` |
@@ -251,14 +252,19 @@ Six things change on the way across, and they are the whole of the work:
 
   - an environment variable — Caddy takes its state directory from
     `XDG_DATA_HOME` and `XDG_CONFIG_HOME` and from no argument at all;
-  - a working directory — mosquitto takes `persistence_location` in its
-    configuration file and nowhere else, and writes to the working directory
-    when it is unset, so `env --chdir` is the only way in. Not dinit's own
-    `working-dir`: dinit-check refuses a directory that does not exist yet,
-    and a directory made at startup never does at build time;
   - a `PATH` — `mariadb-install-db` is a shell script that calls `sed`, and an
     image of store paths has no `PATH`. It exits 1 at `sed: command not
     found`.
+
+  **A working directory is `dinit.service.working-dir`, not `env --chdir`.**
+  mosquitto takes `persistence_location` in its configuration file and nowhere
+  else, and writes to the working directory when it is unset. dinit
+  substitutes `working-dir`, so the state directory reaches it. The build-time
+  check makes {option}`dirs` in a state directory of its own before it runs,
+  because dinit-check exits 1 on a working directory that is absent and a
+  directory dinix-init makes at startup always is — see `checkCommand` in
+  `options.nix`. A `dirs` entry outside the state directory is still absent
+  there: a Nix sandbox refuses `mkdir /var`.
 - **No shell.** services-flake wraps most services in a `writeShellApplication`
   to make a directory and export a variable. dinix makes directories with
   `dirs` before any service starts, and sets variables in `env-file`, so

@@ -12,7 +12,7 @@
 }:
 let
   mosquittoService = lib.modules.importApply ../../services/mosquitto.nix {
-    inherit (pkgs) mosquitto coreutils;
+    inherit (pkgs) mosquitto;
   };
 
   main = config.system.services.mosquitto-main.mosquitto;
@@ -82,8 +82,8 @@ in
       }
       {
         # The persistent broker writes mosquitto.db into its working
-        # directory, which `env --chdir` sets: the only way a state path
-        # reaches mosquitto. See services/mosquitto.nix.
+        # directory, which is the only way a state path reaches mosquitto.
+        # See services/mosquitto.nix.
         name = "the persistent broker writes its database";
         command = "${bash} -c ${lib.escapeShellArg "test -f ${main.dataDir}/mosquitto.db && echo dinix-db-present"}";
         expect = "dinix-db-present";

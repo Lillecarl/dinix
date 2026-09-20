@@ -450,7 +450,7 @@ follows is the one thing that was not obvious about it.
 | `mysql.nix` | MariaDB. `mariadbd --user=root` is the one value that works whether or not the service manager is root. Databases and accounts arrive through `--init-file`, so they run at every start and must be idempotent. |
 | `prometheus.nix` | the configuration file is JSON, which Prometheus reads because JSON is YAML. |
 | `mailpit.nix` | no configuration file at all. `--database` is not optional in practice: without it mailpit writes a temporary file under `$TMPDIR`. |
-| `mosquitto.nix` | `persistence_location` exists only in the configuration file, so a persistent broker runs under `env --chdir`. `user root` stops it dropping to `nobody` and losing the ability to write. |
+| `mosquitto.nix` | `persistence_location` exists only in the configuration file, so a persistent broker gets its path as `working-dir`. `user root` stops it dropping to `nobody` and losing the ability to write. |
 | `caddy.nix` | the state directory arrives as `XDG_DATA_HOME` and `XDG_CONFIG_HOME`, so `env` carries it. |
 
 ## CA certificates

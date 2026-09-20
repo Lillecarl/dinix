@@ -121,10 +121,27 @@ let
 
   # Runs inside the derivation being built, against the layout there, because
   # a relative env-file resolves against the directory holding the service.
+  #
+  # It gets a state directory of its own, with {option}`dirs` made inside it,
+  # because dinit-check exits 1 on a `working-dir` that is not there —
+  # measured — and a directory dinix-init makes at startup is never there at
+  # build time. dinit-check substitutes `DINIX_STATE_DIR` out of its own
+  # environment, and the shell below expands the same `${VAR:-default}` the
+  # same way, so the two agree on where each directory went.
+  #
+  # A `dirs` entry outside the state directory cannot be made: a Nix sandbox
+  # refuses `mkdir /var`, measured. Those stay absent, and a service naming
+  # one still warns — which is what every service did before this existed.
   checkCommand =
     servicesSubdir:
     optionalString config.verifyConfig ''
-      ${getExe' config.internal.dinitPackage "dinit-check"} --services-dir "$out/${servicesSubdir}"
+      (
+        export DINIX_STATE_DIR="$TMPDIR/dinix-check-state"
+        ${concatLines (
+          map (dir: ''mkdir --parents "${dir.path}" 2>/dev/null || true'') (lib.attrValues config.dirs)
+        )}
+        ${getExe' config.internal.dinitPackage "dinit-check"} --services-dir "$out/${servicesSubdir}"
+      )
     '';
 
   # getExe guesses <out>/bin/<pname> when meta.mainProgram is missing, which is
