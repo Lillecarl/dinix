@@ -1,3 +1,29 @@
+# Before porting: is it already a modular service?
+
+[Modular Services](https://nixos.org/manual/nixos/unstable/#modular-services)
+are nixpkgs' portable service modules — a module says what to run without
+saying who runs it, so one module works under systemd, under finit and under
+dinit. dinix implements the interface; see the `system.services` option.
+
+```nix
+system.services.tunnel = {
+  imports = [ pkgs.ghostunnel.services.default ];
+  ghostunnel.listen = "127.0.0.1:8443";
+  dinit.service.dinix.critical = true;
+};
+```
+
+**If a service already ships one, use it and port nothing.** `pkgs.<name>.services.default`
+is where it lives. About ten exist today, `php` among them, and the number
+grows.
+
+If none exists, consider writing one upstream rather than a dinix-only module:
+it is the same work and everyone gets it. What it cannot express yet is the
+part our ports lean on — no user is created, no directory is made, nothing is
+owned, and there is no run-once init — so a module that needs those still
+needs a dinix-specific tree beside it. The interface is new in NixOS 25.11 and
+changing, so track it rather than wrap it.
+
 # Porting a service from services-flake
 
 [services-flake](https://github.com/juspay/services-flake) has about thirty

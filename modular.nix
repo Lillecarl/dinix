@@ -19,6 +19,8 @@
 let
   inherit (lib) mkOption types;
 
+  serviceLib = import ./service-lib.nix;
+
   /**
     One module, loaded into the root service submodule and into every
     sub-service, that does the two things an implementation has to do.
@@ -79,6 +81,44 @@ let
               the attribute set is only added when this option exists.
             '';
           };
+
+          stateDir = mkOption {
+            type = types.str;
+            readOnly = true;
+            default = "${serviceLib.stateDir}/${servicePrefix}";
+            description = ''
+              Where this service should keep what it writes.
+
+              Read by a service module for its own data directory default. The
+              value is not a path but a template dinit expands when it loads
+              the service, so one store path serves a container, an uncontained
+              run and a systemd unit alike. See {option}`dirs`.
+
+              The portable layer declares nothing like this — the manual lists
+              per-service state as still to be decided — so a module that uses
+              it is dinix-specific to that extent, and says so by reaching it
+              through `options ? dinit`.
+            '';
+          };
+
+          dirs = mkOption {
+            type = types.attrsOf types.anything;
+            default = { };
+            description = ''
+              Directories to make before anything starts, as {option}`dirs`
+              takes them. The portable layer has no answer for this, and under
+              systemd the same module would say `StateDirectory` instead.
+            '';
+          };
+
+          mustExist = mkOption {
+            type = types.attrsOf types.anything;
+            default = { };
+            description = ''
+              Paths a volume has to provide already, as {option}`mustExist`
+              takes them.
+            '';
+          };
         };
 
         services = mkOption {
@@ -123,6 +163,13 @@ let
   # dinit-service(5): double quotes around all or part of a value, and a
   # backslash escapes the next character even inside them.
   quoteArgument = argument: ''"${lib.escape [ "\\" "\"" ] (toString argument)}"'';
+
+  # `dinit.dirs` and `dinit.mustExist` of a service and of everything below it.
+  collect =
+    part: service:
+    service.dinit.${part} // lib.concatMapAttrs (_: child: collect part child) service.services;
+
+  collectAll = part: lib.concatMapAttrs (_: service: collect part service) config.system.services;
 
   # Every configData entry of a service and of everything below it, as the
   # relative path inside configDir it is written at.
@@ -172,6 +219,9 @@ in
 
   config = {
     services = lib.concatMapAttrs renderService config.system.services;
+
+    dirs = collectAll "dirs";
+    mustExist = collectAll "mustExist";
 
     internal.configDataFiles = lib.concatMapAttrs (
       name: service: renderConfigData name service
