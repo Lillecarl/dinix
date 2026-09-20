@@ -39,11 +39,12 @@ jobs:
         timeout-minutes: 15
         with:
           # dev.nix takes `pkgs ? import <nixpkgs> { }`, so a runner decides
-          # which nixpkgs the tests run against. Pinned here rather than left
-          # to the channel the installer ships: otherwise a red run says only
-          # that nixpkgs moved. This is the revision the tests were last run
-          # against locally. See issue #17.
-          nix_path: nixpkgs=https://github.com/NixOS/nixpkgs/archive/aff8a0b28396750446e5537a96461bc4facdb287.tar.gz
+          # which nixpkgs the tests run against. Unstable, unpinned: a run
+          # therefore also answers whether dinix still builds against a moving
+          # nixpkgs, and the cost is that a red run may mean only that nixpkgs
+          # moved. See issue #17 for putting a pin in the repository, where a
+          # local build would read it too.
+          nix_path: nixpkgs=channel:nixpkgs-unstable
           # A runner has four cores and a guest is a process, so running
           # several builds at once only makes each one slower.
           extra_nix_config: |
