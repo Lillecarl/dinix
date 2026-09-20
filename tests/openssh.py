@@ -196,24 +196,40 @@ async def test(vms: Machines) -> None:
             f"so a program falling back to a compiled-in path finds no "
             f"certificates:\n{buffered}"
         )
-    exists = await ssh(node, settings, f"test -r {settings['caBundle']}; echo $?")
-    if last_line(exists) != "0":
-        raise MachineError(
-            f"[{node.name}] SSL_CERT_FILE names {settings['caBundle']}, which the "
-            f"container cannot read"
-        )
-    print("[test] every service is told where the CA bundle is, and it is there", flush=True)
-
+    # The login goes first, because every check below asks its question over
+    # ssh and a refused login answers all of them the same way. Measured by
+    # getting it wrong: with the CA bundle asked first, a login that failed on
+    # a runner was reported as a certificate the container could not read.
     try:
         who = await ssh(node, settings, "id -u")
     except MachineError as refused:
         logs = await node.succeed(f"podman logs {NAME}")
         raise MachineError(f"{refused}\n--- container log ---\n{logs}") from None
     if last_line(who) != str(settings["uid"]):
+        logs = await node.succeed(f"podman logs {NAME}")
         raise MachineError(
             f"[{node.name}] logged in, but as {who!r} and not {settings['uid']}"
+            f"\n--- container log ---\n{logs}"
         )
     print(f"[test] a key login reached a command, as uid {settings['uid']}", flush=True)
+
+    exists = await ssh(node, settings, f"test -r {settings['caBundle']}; echo $?")
+    if last_line(exists) != "0":
+        # What the container sees, not what the store holds: the bundle is
+        # 0444 in every nixpkgs, so a container that cannot read it is being
+        # shown something else -- a path the image never carried, or a store
+        # the guest mounts differently for this account.
+        seen = await ssh(
+            node,
+            settings,
+            f"id; ls -ldL {settings['caBundle']} || true; "
+            f"ls -ld /nix/store || true; echo $?",
+        )
+        raise MachineError(
+            f"[{node.name}] SSL_CERT_FILE names {settings['caBundle']}, which the "
+            f"container cannot read:\n{exists}\n--- as the container sees it ---\n{seen}"
+        )
+    print("[test] every service is told where the CA bundle is, and it is there", flush=True)
 
     # /var/empty arrived 1777 from --tmpfs, and sshd refuses to start when it
     # is group or world writable. It started, so dinix-init fixed it; check the
