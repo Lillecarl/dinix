@@ -3,7 +3,12 @@
 #
 # Two pools out of services-flake's own phpfpm_test.nix: one answering on a
 # socket, one on TCP. See PORTING.md.
-{ pkgs, config, lib, ... }:
+{
+  pkgs,
+  config,
+  lib,
+  ...
+}:
 let
   fcgi = "${pkgs.fcgi}/bin/cgi-fcgi";
   env = "${pkgs.coreutils}/bin/env";
@@ -43,16 +48,15 @@ in
     };
   };
 
-  # php-fpm runs as whoever starts it, and refuses no account, so no output
-  # needs run-as except the rootContainer one: there dinit itself runs as
-  # root, and the socket and the directory must belong to the account the
-  # checks run as everywhere else. run-as is a dinit setting, so it goes on
+  # php-fpm runs as whoever starts it, and refuses no account, so run-as is
+  # needed only where dinit itself is root: there the socket and the
+  # directory must belong to the account the checks run as everywhere else. run-as is a dinit setting, so it goes on
   # the rendered service rather than on the pool, and an unprivileged dinit
   # cannot do it at all. nobody is in the user database dinix writes, and
   # dinit resolves the name against the passwd and group files the container
   # mounts a file at a time.
-  services.phpfpm-main.run-as = lib.mkIf (config.mode == "rootContainer") "nobody";
-  services.phpfpm-alt.run-as = lib.mkIf (config.mode == "rootContainer") "nobody";
+  services.phpfpm-main.run-as = lib.mkIf config.privileged "nobody";
+  services.phpfpm-alt.run-as = lib.mkIf config.privileged "nobody";
 
   # The directory mode comes from the module; the owner comes from here, and
   # only the collection knows it: 65534 twice is users.nobody in users.nix.

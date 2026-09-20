@@ -2,7 +2,12 @@
 # running container. dev.nix turns this into an image, a guest and a test.
 #
 # This is the whole of what a service port writes for its test. See PORTING.md.
-{ pkgs, config, lib, ... }:
+{
+  pkgs,
+  config,
+  lib,
+  ...
+}:
 let
   # memcached ships no client, and the image holds only what the service
   # commands reference. The checks pipe a request into nc, and a pipe takes a
@@ -21,15 +26,15 @@ in
 {
   memcached.main.enable = true;
 
-  # memcached refuses to run as root. Where dinit itself runs as root —
-  # the rootContainer output — run-as changes user before exec, so the
-  # server never sees root at all. run-as is a dinit setting, so it goes
-  # on the rendered service rather than on the memcached instance, and an
-  # unprivileged dinit cannot do it at all, so only that output sets it.
+  # memcached refuses to run as root. Where dinit itself runs as root,
+  # run-as changes user before exec, so the server never sees root at all.
+  # run-as is a dinit setting, so it goes on the rendered service rather
+  # than on the memcached instance, and an unprivileged dinit cannot do it
+  # at all, so only a privileged configuration sets it.
   # nobody is in the user database dinix writes, and dinit resolves the
   # name against the passwd and group files the container mounts a file
   # at a time.
-  services.memcached-main.run-as = lib.mkIf (config.mode == "rootContainer") "nobody";
+  services.memcached-main.run-as = lib.mkIf config.privileged "nobody";
 
   # A second instance on its own port. Two of them under the same key is what
   # catches instances sharing state, as in the redis collection.
@@ -37,10 +42,10 @@ in
     enable = true;
     port = 11311;
   };
-  services.memcached-alt.run-as = lib.mkIf (config.mode == "rootContainer") "nobody";
+  services.memcached-alt.run-as = lib.mkIf config.privileged "nobody";
 
-  # The outputs without run-as still reach root: noContainer runs dinit as
-  # whatever user starts it. memcached's own -u flag drops privilege after
+  # A configuration without run-as can still reach root: an uncontained
+  # dinit runs as whatever user starts it. memcached's own -u flag drops privilege after
   # startup instead, which needs no privilege but root to begin with and is
   # a no-op everywhere else — as nobody it resolves and re-applies itself.
   # Every account here resolves: dinix's user database in the containers,

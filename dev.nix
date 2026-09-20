@@ -175,37 +175,32 @@ let
     writable paths the services need and what to ask the running system.
     No Python. See PORTING.md.
 
-    Four test modes, one per reasonable environment. Each runs the dinix
-    output of the same name, except the two vm modes, which run the one
-    output without a container twice: as root and as an ordinary user.
+    Four test modes: the two axes an environment is made of, crossed.
+    Whether there is a container decides which wrapper runs; whether dinit
+    is root decides whether a service may drop privilege with run-as, and
+    that is the only one the configuration has to know in advance.
 
-    - `root`: the rootContainer output as a container running as root.
-    - `user`: the nobodyContainer output as a container running as nobody.
-    - `vm-root`: the noContainer output with dinit as root on the guest.
-    - `vm-user`: the noContainer output with dinit --user on the guest.
+    - `root`: a container, dinit as root.
+    - `user`: the same container run as nobody.
+    - `vm-root`: no container, dinit as root on the guest — the systemd shape.
+    - `vm-user`: no container, dinit --user as an ordinary account.
   */
   collectionTest =
     name: testMode:
     let
-      # Which mode this run evaluates for. It decides one thing — whether a
-      # collection may use run-as — and nothing else; where state lives is a
-      # runtime question now, answered by DINIX_STATE_DIR when dinit loads.
-      dinixMode =
-        {
-          root = "rootContainer";
-          user = "nobodyContainer";
-          vm-root = "noContainer";
-          vm-user = "noContainer";
-        }
-        ."${testMode}";
+      # The two axes the four test modes are made of. Only one of them is a
+      # configuration question: whether dinit will be root, and so whether a
+      # service may use run-as. The other decides which wrapper the driver
+      # runs and nothing in the service descriptions.
       isVm = lib.hasPrefix "vm-" testMode;
+      isPrivileged = testMode == "root" || testMode == "vm-root";
 
       dinix = import ./. {
         inherit pkgs;
         modules = [
           ./tests/collection-options.nix
           (./tests/collections + "/${name}.nix")
-          { mode = dinixMode; }
+          { privileged = isPrivileged; }
         ];
       };
 

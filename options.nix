@@ -479,42 +479,34 @@ in
     ./modular.nix
     ./phpfpm.nix
     ./postgres.nix
-    ./redis.nix
     ./users.nix
   ];
 
   options = {
-    mode = mkOption {
-      type = types.enum [
-        "rootContainer"
-        "nobodyContainer"
-        "noContainer"
-      ];
-      default = "rootContainer";
+    privileged = mkOption {
+      type = types.bool;
+      default = true;
       description = ''
-        Which environment this configuration is for. An ordinary option: set
-        it in your own module.
+        Whether dinit will run as root, and so whether a service may drop
+        privilege with `run-as`.
 
-        **It decides one thing only: whether a service may drop privilege.**
-        `run-as` needs a dinit running as root, and a service description
-        cannot ask at startup whether that is so — `run-as` is not one of the
-        settings dinit substitutes. Everything else about an environment is
-        decided at runtime and needs no mode: the state directory expands from
-        `DINIX_STATE_DIR`, and dinix-init skips an owner or a mode that already
-        holds.
+        **This is the only thing about an environment that a configuration has
+        to decide in advance.** Everything else is answered at runtime: the
+        state directory expands from `DINIX_STATE_DIR`, and dinix-init skips an
+        owner or a mode that already holds. `run-as` cannot be, because dinit
+        does not substitute it and a service description has no way to ask at
+        startup whether it is root.
 
-        `rootContainer` runs dinit as root in a container, so a service may
-        name `run-as`.
+        An earlier version called this `mode` and offered `rootContainer`,
+        `nobodyContainer` and `noContainer`. That conflated two independent
+        questions — containerised or not, privileged or not — and answered only
+        the first for uncontained runs. So a postgres under systemd as root got
+        no `run-as`, ran as root, and refused to start, which is what found it.
+        Whether there is a container decides which wrapper you run
+        ({option}`containerWrapper` or {option}`userWrapper`) and nothing in
+        the service descriptions, so it needs no option here.
 
-        `nobodyContainer` runs the same container unprivileged. Nothing may
-        use `run-as`; the runtime already chose the user.
-
-        `noContainer` runs dinit directly, under systemd or by hand, as
-        whoever starts it. dinix-init still makes {option}`dirs`, and this is
-        the mode that needs it most: no runtime mounts a volume here, so if
-        dinix does not make the state directory then nothing does.
-
-        dinix reads this nowhere itself. A collection reads it to decide
+        dinix reads this nowhere itself. A service module reads it to decide
         `run-as`, which is a deployment question and so the consumer's.
       '';
     };
@@ -1122,7 +1114,7 @@ in
           concatLines (
             lib.mapAttrsToList (path: source: ''
               mkdir --parents "$out/$(dirname ${lib.escapeShellArg path})"
-              cp --no-preserve=mode ${lib.escapeShellArg (toString source)} "$out/${path}"
+              cp --recursive --no-preserve=mode ${lib.escapeShellArg (toString source)} "$out/${path}"
             '') config.internal.configDataFiles
           )
           + ''
