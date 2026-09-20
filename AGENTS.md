@@ -25,7 +25,12 @@ Two source libraries, both worth reading for the same service:
   tests, which is what CI builds.
 - State paths belong on the command line, never inside a file the program
   reads. That rule is what makes one store path run rootful, rootless and
-  uncontained.
+  uncontained. No flag for it? `env` carries a variable, a `PATH` or a
+  working directory (`--chdir`) and still execs.
+- A service's own configuration cannot decide which attributes it defines.
+  `lib.optionalAttrs cfg.foo { dinit = ...; }` recurses; `lib.mkIf` does not.
+- Check the package first: `meta.license.free`, and whether it is marked
+  insecure. `dev.nix` takes a plain `import <nixpkgs> { }`.
 
 ## dinit service settings
 

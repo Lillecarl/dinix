@@ -110,6 +110,14 @@ option.** `//` is a shallow merge, so a `dinit` half setting `redis.dataDir`
 replaces a first half setting `redis.extraConfig` outright, and the setting
 vanishes with no error. `services/phpfpm.nix` shows the merge form.
 
+**Which attributes a service defines cannot depend on its own
+configuration.** `lib.optionalAttrs (options ? dinit)` is fine: `options` is
+known before `config` is. `lib.optionalAttrs cfg.persistence { dinit = …; }`
+is an infinite recursion, because the freeform merge has to know the shape
+before it can evaluate a value, and the error names `_module.freeformType`
+rather than your line. Keep the shape fixed and gate the value with
+`lib.mkIf`. `services/mosquitto.nix` shows both.
+
 A file the program reads is a `configData` entry: the module names the content,
 the service manager decides where the file lands, and the module reads the
 place back out of `configData.<name>.path`. See `services/nginx.nix`.
@@ -188,7 +196,7 @@ runs, dinit answers on its control socket, every service reaches `started`,
 no service failed while the checks ran, and SIGTERM stops the container inside
 a grace period.
 
-Two things about a check, both measured by getting them wrong:
+Three things about a check, each measured by getting it wrong:
 
 - **There is no terminal.** A client that formats for a human when it has one
   prints its raw reply here. `redis-cli exists` gives `0`, not `(integer) 0`.
@@ -196,6 +204,13 @@ Two things about a check, both measured by getting them wrong:
 - **`expect` is a substring**, so pick one that cannot match by accident. Two
   instances holding different values under the same key prove they are
   separate; a count of `0` proves nothing, because `0` is in `10` as well.
+- **A check cannot name a store path the configuration does not reference.**
+  A container holds the image's closure and nothing else, so a
+  `builtins.toFile` that only a check mentions is absent there and present in
+  the vm modes — two modes pass and two fail. Either reference it from the
+  configuration, as the caddy collection's document root is referenced from
+  its Caddyfile, or build the data in the check, as the mailpit collection
+  pipes a message through `printf`.
 
 ## The mapping
 
@@ -206,6 +221,7 @@ Two things about a check, both measured by getting them wrong:
 | a start script that `mkdir -p`s `dataDir` | `dinit.dirs.<dataDir>` |
 | `command = <script>` | `process.argv`, the program itself |
 | a generated config file | `configData.<name>`, read back as `.path` |
+| an exported variable, or a `cd` | `env VAR=… ` / `env --chdir=…` in `process.argv` |
 | `depends_on.<x>.condition` | `dinit.service.depends-on`, or `waits-for` for soft |
 | `readiness_probe` | a `collection.checks` entry — dinit has no probe |
 | `availability.restart = "on_failure"` | `dinit.service.dinix.critical = false` |
@@ -227,6 +243,22 @@ Six things change on the way across, and they are the whole of the work:
   the paths in the config file left relative. **Check what else the prefix
   moves**: `nginx -p` also moves the default document root, so the port names
   `root` explicitly — found by a 404 rather than by reading.
+
+  **`env` is the way out when there is no flag.** It is a program, so it goes
+  in `process.argv` and every service manager substitutes it, and it execs, so
+  nothing extra stays running. Three ports need it, each for a different
+  reason:
+
+  - an environment variable — Caddy takes its state directory from
+    `XDG_DATA_HOME` and `XDG_CONFIG_HOME` and from no argument at all;
+  - a working directory — mosquitto takes `persistence_location` in its
+    configuration file and nowhere else, and writes to the working directory
+    when it is unset, so `env --chdir` is the only way in. Not dinit's own
+    `working-dir`: dinit-check refuses a directory that does not exist yet,
+    and a directory made at startup never does at build time;
+  - a `PATH` — `mariadb-install-db` is a shell script that calls `sed`, and an
+    image of store paths has no `PATH`. It exits 1 at `sed: command not
+    found`.
 - **No shell.** services-flake wraps most services in a `writeShellApplication`
   to make a directory and export a variable. dinix makes directories with
   `dirs` before any service starts, and sets variables in `env-file`, so
@@ -254,6 +286,15 @@ Six things change on the way across, and they are the whole of the work:
   file dinit made as root refuses the account the service would become:
   `failed to open error_log`, exit 78. Let such a program keep root and use its
   own user directive, as memcached's `-u` and php-fpm's `user` do.
+
+  **Naming the account it already is makes one description work everywhere.**
+  A program that drops privilege only does so as root, so `root` in its own
+  user directive is a no-op for anyone else, and no mode needs a branch.
+  `mariadbd --user=root` is the clear case: without it, root gets "Please
+  consult the Knowledge Base to find out how to run mysqld as root!" and an
+  exit, and anyone else gets a warning and a running server. mosquitto is the
+  quiet one: without `user root` it drops to `nobody` and then cannot write
+  into the directory root made, while still running and answering.
 - **Secrets and passwords are mounted**, never rendered into the store.
   Everything dinix generates is world-readable. See the host key note in
   README.md.

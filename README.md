@@ -438,6 +438,21 @@ the container mounts a file at a time. Where dinit is not root, memcached's own
 The test also shows [PORTING.md](PORTING.md)'s `collection.packages`: a check
 that asks the service a question needs a client, and memcached ships none.
 
+## The other ported services
+
+Each is a module in `services/` and a collection in `tests/collections/`, and
+each passes in all four test modes. Read the module for its options; what
+follows is the one thing that was not obvious about it.
+
+| service | the awkward part |
+| --- | --- |
+| `nats.nix` | the whole configuration is one JSON file, because `nats-server -c` on an empty one exits 1. Only the JetStream store directory is an argument, as `-sd`. |
+| `mysql.nix` | MariaDB. `mariadbd --user=root` is the one value that works whether or not the service manager is root. Databases and accounts arrive through `--init-file`, so they run at every start and must be idempotent. |
+| `prometheus.nix` | the configuration file is JSON, which Prometheus reads because JSON is YAML. |
+| `mailpit.nix` | no configuration file at all. `--database` is not optional in practice: without it mailpit writes a temporary file under `$TMPDIR`. |
+| `mosquitto.nix` | `persistence_location` exists only in the configuration file, so a persistent broker runs under `env --chdir`. `user root` stops it dropping to `nobody` and losing the ability to write. |
+| `caddy.nix` | the state directory arrives as `XDG_DATA_HOME` and `XDG_CONFIG_HOME`, so `env` carries it. |
+
 ## CA certificates
 
 A container built from a Nix closure has no `/etc/ssl`. A program that falls
