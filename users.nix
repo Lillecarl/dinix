@@ -121,6 +121,16 @@ in
           name = "nobody";
           gid = 65534;
         };
+        # The same group under the other name it goes by. Programs compiled
+        # for a distribution look up one or the other and exit when it is
+        # missing: nginx asks for `nogroup` and dies with `getgrnam("nogroup")
+        # failed`, while a Debian-built package asks for `nobody`. NixOS ships
+        # user `nobody` with group `nogroup`, so both names at one gid is what
+        # matches the world around it.
+        groups.nogroup = {
+          name = "nogroup";
+          gid = 65534;
+        };
       };
     }
   ];
