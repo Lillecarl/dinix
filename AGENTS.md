@@ -1,5 +1,28 @@
 # Agent notes for dinix
 
+## Porting a service
+
+Read [PORTING.md](PORTING.md) first. `services/redis.nix` and
+`tests/collections/redis.nix` are the worked pair; `services/postgres.nix` is
+the hard one (sub-service, run-once init, `run-as`).
+
+- Every service dinix authors is a NixOS Modular Service in `services/`. No
+  `pkgs` argument: dependencies arrive through `lib.modules.importApply`.
+- `config = lib.mkMerge [ ... ]`, not `//`, when both halves set the service's
+  own option. `//` is shallow and drops one silently.
+- Render before running a test: `nix build --file ./dev.nix collections.<name>.root`
+  builds the image, but the rendered service description is what shows a
+  quoting or merge bug.
+- A port passes in **all four modes**:
+
+      nix build --file ./dev.nix collections.<name>.{root,user,vm-root,vm-user}
+
+  `nix build --file ./dev.nix checks` is every collection and both container
+  tests, which is what CI builds.
+- State paths belong on the command line, never inside a file the program
+  reads. That rule is what makes one store path run rootful, rootless and
+  uncontained.
+
 ## dinit service settings
 
 The full set of service-description settings — names, and the assignment
