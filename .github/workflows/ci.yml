@@ -1,0 +1,70 @@
+# One job that builds `checks`, which is every collection in every mode and
+# both container tests. See dev.nix.
+#
+# One job and not one per test, because there is no binary cache: the guest
+# system and the UML kernel are built here, and a second job would build them
+# again rather than share them. Add a cache and splitting becomes worth it.
+name: ci
+
+on:
+  push: {}
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    # A cold runner builds the UML kernel, the guest system and every service
+    # closure before the first guest boots. GitHub's own ceiling is 6 hours.
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@main
+        timeout-minutes: 10
+
+      # The images and closures under test do not fit beside the runner's
+      # preinstalled toolchains.
+      - name: Make room on the runner
+        timeout-minutes: 10
+        run: |
+          df -h /
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift \
+            /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android \
+            /opt/az /usr/local/share/powershell /usr/local/share/chromium \
+            /opt/microsoft /opt/google /usr/lib/firefox
+          docker system prune --all --force
+          df -h /
+
+      - uses: cachix/install-nix-action@master
+        timeout-minutes: 15
+        with:
+          # dev.nix takes `pkgs ? import <nixpkgs> { }`, so a runner decides
+          # which nixpkgs the tests run against. Pinned here rather than left
+          # to the channel the installer ships: otherwise a red run says only
+          # that nixpkgs moved. This is the revision the tests were last run
+          # against locally. See issue #17.
+          nix_path: nixpkgs=https://github.com/NixOS/nixpkgs/archive/aff8a0b28396750446e5537a96461bc4facdb287.tar.gz
+          # A runner has four cores and a guest is a process, so running
+          # several builds at once only makes each one slower.
+          extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
+            cores = 4
+            max-jobs = 1
+
+      # A UML guest boots inside the Nix sandbox, which unshares a user
+      # namespace, and Ubuntu's AppArmor denies an unprivileged one. Without
+      # this every test fails at startup rather than on its own merits. The
+      # unshare is the proof it took, not a formality.
+      - name: Allow an unprivileged user namespace
+        timeout-minutes: 5
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
+
+      # --keep-going: one failing collection should not hide the state of the
+      # other six. A test output is an empty file whose existence means it ran
+      # and behaved.
+      - name: Build every check
+        timeout-minutes: 330
+        run: nix build --no-link --print-build-logs --keep-going --file ./dev.nix checks
