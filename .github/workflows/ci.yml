@@ -63,6 +63,13 @@ jobs:
           sudo sysctl -w kernel.unprivileged_userns_clone=1
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
 
+      # Evaluation alone answers in about a minute what a typo in a collection
+      # would otherwise cost the whole build to find: the kernel and the guest
+      # system come first, and they are hours on a cold runner.
+      - name: Evaluate every check
+        timeout-minutes: 20
+        run: nix eval --raw --file ./dev.nix checks.drvPath
+
       # --keep-going: one failing collection should not hide the state of the
       # other six. A test output is an empty file whose existence means it ran
       # and behaved.
