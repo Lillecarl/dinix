@@ -107,6 +107,18 @@ let
         )
       );
 
+  # A failed assertion stops the build of configDir, which every output is
+  # built from, so there is no way to get a configuration that ignored one.
+  # Modular service modules write assertions and expect somebody to read them.
+  checked =
+    value:
+    let
+      failed = map (entry: entry.message) (filter (entry: !entry.assertion) config.assertions);
+    in
+    lib.throwIf (failed != [ ]) (concatLines ([ "dinix: failed assertions:" ] ++ failed)) (
+      lib.foldl' (acc: message: lib.warn message acc) value config.warnings
+    );
+
   # Runs inside the derivation being built, against the layout there, because
   # a relative env-file resolves against the directory holding the service.
   checkCommand =
@@ -464,7 +476,9 @@ in
     ./memcached.nix
     ./nginx.nix
     ./openssh.nix
+    ./modular.nix
     ./phpfpm.nix
+    ./postgres.nix
     ./redis.nix
     ./users.nix
   ];
@@ -713,6 +727,31 @@ in
       '';
     };
 
+    assertions = mkOption {
+      type = types.listOf (
+        types.submodule {
+          options = {
+            assertion = mkOption { type = types.bool; };
+            message = mkOption { type = types.str; };
+          };
+        }
+      );
+      default = [ ];
+      internal = true;
+      description = ''
+        Conditions that must hold, in the shape NixOS uses, because a modular
+        service module writes them that way. A failed one stops the build of
+        {option}`configDir`, which everything else is built from.
+      '';
+    };
+
+    warnings = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      internal = true;
+      description = "Messages printed once while evaluating {option}`configDir`.";
+    };
+
     initPackage = mkOption {
       type = types.package;
       default = pkgs.callPackage ./dinix-init/package.nix { };
@@ -876,6 +915,17 @@ in
               Files under `etc/` that dinix renders, as relative path to
               content: the user database, and any configuration a built-in
               service writes for the program it runs.
+            '';
+          };
+          configDataFiles = mkOption {
+            type = types.attrsOf types.path;
+            default = { };
+            description = ''
+              Files copied into {option}`configDir`, as relative path to the
+              store path holding the content. A modular service's `configData`
+              arrives this way: the portable layer renders it to a file and
+              hands over a `source`, so there is text to read only by building
+              it, which would be import-from-derivation.
             '';
           };
           envfileArg = mkOption {
@@ -1044,7 +1094,7 @@ in
 
     };
 
-    configDir =
+    configDir = checked (
       writeFiles "dinix-config"
         (
           (lib.mapAttrs' (
@@ -1065,7 +1115,17 @@ in
           // config.internal.etcFiles
         )
         (
-          ''
+          # A modular service's configData is already a store path by the time
+          # dinix sees it, so it is copied rather than written. --no-preserve
+          # because a store path is read-only and the copy has to be writable
+          # for the marker substitution below.
+          concatLines (
+            lib.mapAttrsToList (path: source: ''
+              mkdir --parents "$out/$(dirname ${lib.escapeShellArg path})"
+              cp --no-preserve=mode ${lib.escapeShellArg (toString source)} "$out/${path}"
+            '') config.internal.configDataFiles
+          )
+          + ''
             # grep exits 1 when nothing matches, which is the ordinary case:
             # only a service that has to name this very path uses the marker.
             grep --recursive --files-with-matches --null @configDir@ "$out" \
@@ -1073,7 +1133,8 @@ in
               || true
           ''
           + checkCommand "services"
-        );
+        )
+    );
 
     userWrapper =
       pkgs.runCommand "${config.name}-user"
