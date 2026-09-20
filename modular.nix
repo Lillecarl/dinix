@@ -119,6 +119,31 @@ let
               takes them.
             '';
           };
+
+          users = mkOption {
+            type = types.attrsOf types.anything;
+            default = { };
+            description = ''
+              Accounts this service needs in the user database, as
+              {option}`users.users` takes them. Declaring one turns the
+              database on.
+
+              A service that refuses to start without an account of its own —
+              sshd without its privilege separation user, for one — has no
+              portable way to say so: the manual lists per-service users as
+              still to be decided. Under systemd the same module would say
+              `DynamicUser` or leave it to a sysusers file.
+            '';
+          };
+
+          groups = mkOption {
+            type = types.attrsOf types.anything;
+            default = { };
+            description = ''
+              Groups this service needs, as {option}`users.groups` takes them.
+              See {option}`dinit.users`.
+            '';
+          };
         };
 
         services = mkOption {
@@ -164,7 +189,8 @@ let
   # backslash escapes the next character even inside them.
   quoteArgument = argument: ''"${lib.escape [ "\\" "\"" ] (toString argument)}"'';
 
-  # `dinit.dirs` and `dinit.mustExist` of a service and of everything below it.
+  # `dinit.dirs`, `dinit.mustExist`, `dinit.users` and `dinit.groups` of a
+  # service and of everything below it.
   collect =
     part: service:
     service.dinit.${part} // lib.concatMapAttrs (_: child: collect part child) service.services;
@@ -207,10 +233,11 @@ in
       `<parent>-<child>`. Nothing here attaches them to `boot`: set
       {option}`services.<name>.dinix.critical`, as for any other service.
 
-      **What dinix does not answer yet**, because the portable layer does not
-      declare it: no user is created, no directory is made, and nothing is
-      owned. Use {option}`dirs`, {option}`users` and `run-as` beside this,
-      which is what dinix's own ported services do.
+      **The portable layer declares no state, no user and no ownership**, so
+      dinix adds a `dinit` tree to every service for them: {option}`dinit.dirs`,
+      {option}`dinit.users`, {option}`dinit.groups` and `dinit.service.run-as`.
+      A module reaches them through `options ? dinit` and still evaluates
+      elsewhere. See issue #15.
 
       `process.reloadCommand` and `process.reloadSignal` are ignored: dinit has
       no reload. `dinitctl signal` sends one by hand.
@@ -222,6 +249,12 @@ in
 
     dirs = collectAll "dirs";
     mustExist = collectAll "mustExist";
+
+    users.users = collectAll "users";
+    users.groups = collectAll "groups";
+    # A service that asks for an account needs somewhere to put it, and a
+    # configuration that asks for none pays nothing.
+    users.enable = lib.mkIf (collectAll "users" != { } || collectAll "groups" != { }) true;
 
     internal.configDataFiles = lib.concatMapAttrs (
       name: service: renderConfigData name service
