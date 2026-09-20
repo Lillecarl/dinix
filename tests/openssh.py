@@ -35,6 +35,8 @@ own uid whether it separates privileges.  `vms.settings` carries the
 difference: as root, and as an ordinary user with `--user`.
 """
 
+import re
+
 from uml_runner import Machine, MachineError, Machines, run_test
 from uml_runner.cluster import until
 
@@ -89,8 +91,7 @@ async def ssh(vm: Machine, settings: dict, command: str) -> str:
     # 2>&1 because the agent captures standard output alone, and every reason
     # ssh has for failing is on standard error. So is anything sshd says about
     # the session -- "Could not chdir to home directory" for one, since a
-    # read-only image has no home -- which is why callers read the last line
-    # rather than the whole output.
+    # read-only image has no home.
     return await vm.succeed(
         "ssh -F none -i /tmp/dinix-test-key"
         " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
@@ -100,9 +101,33 @@ async def ssh(vm: Machine, settings: dict, command: str) -> str:
     )
 
 
+# What a remote command answered, marked so that nothing else on the stream
+# can be mistaken for it.
+#
+# The alternative, reading the last line, is wrong on a stream that carries
+# two things: the command's own output and whatever sshd says about the
+# session, merged by the 2>&1 above. A session message arriving after the
+# answer then *is* the last line. Measured on a runner, where a CA bundle the
+# container could read was reported as one it could not.
+ANSWER = re.compile(r"dinix-answer\[(.*)\]")
+
+
 def last_line(output: str) -> str:
+    """The last line of a guest command's output. Not for ssh -- see `answer`."""
     lines = output.strip().splitlines()
     return lines[-1].strip() if lines else ""
+
+
+async def answer(vm: Machine, settings: dict, command: str) -> str:
+    # Double quotes only: ssh() passes the command through repr(), which
+    # chooses single quotes unless the string holds one.
+    output = await ssh(vm, settings, f'printf "dinix-answer[%s]\\n" "$({command})"')
+    found = ANSWER.findall(output)
+    if not found:
+        raise MachineError(
+            f"[{vm.name}] {command!r} answered nothing over ssh:\n{output}"
+        )
+    return found[-1].strip()
 
 
 async def test(vms: Machines) -> None:
@@ -201,11 +226,11 @@ async def test(vms: Machines) -> None:
     # getting it wrong: with the CA bundle asked first, a login that failed on
     # a runner was reported as a certificate the container could not read.
     try:
-        who = await ssh(node, settings, "id -u")
+        who = await answer(node, settings, "id -u")
     except MachineError as refused:
         logs = await node.succeed(f"podman logs {NAME}")
         raise MachineError(f"{refused}\n--- container log ---\n{logs}") from None
-    if last_line(who) != str(settings["uid"]):
+    if who != str(settings["uid"]):
         logs = await node.succeed(f"podman logs {NAME}")
         raise MachineError(
             f"[{node.name}] logged in, but as {who!r} and not {settings['uid']}"
@@ -213,8 +238,8 @@ async def test(vms: Machines) -> None:
         )
     print(f"[test] a key login reached a command, as uid {settings['uid']}", flush=True)
 
-    exists = await ssh(node, settings, f"test -r {settings['caBundle']}; echo $?")
-    if last_line(exists) != "0":
+    exists = await answer(node, settings, f"test -r {settings['caBundle']}; echo $?")
+    if exists != "0":
         # What the container sees, not what the store holds: the bundle is
         # 0444 in every nixpkgs, so a container that cannot read it is being
         # shown something else -- a path the image never carried, or a store
@@ -236,13 +261,13 @@ async def test(vms: Machines) -> None:
     # mode itself rather than infer it. A container that is not root separates
     # no privileges and has no such directory.
     if "/var/empty" in settings["tmpfs"]:
-        mode = await ssh(node, settings, "stat -c %a /var/empty")
-        if last_line(mode) != "755":
+        mode = await answer(node, settings, "stat -c %a /var/empty")
+        if mode != "755":
             raise MachineError(f"[{node.name}] /var/empty is mode {mode!r}, not 755")
         print("[test] dinix-init turned a 1777 tmpfs into 0755", flush=True)
     else:
-        missing = await ssh(node, settings, "test -e /var/empty; echo $?")
-        if last_line(missing) == "0":
+        missing = await answer(node, settings, "test -e /var/empty; echo $?")
+        if missing == "0":
             raise MachineError(
                 f"[{node.name}] /var/empty exists, so dinix made a privilege "
                 f"separation directory a rootless sshd never asks for"
