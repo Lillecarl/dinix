@@ -473,7 +473,6 @@ in
 {
   imports = [
     ./cacert.nix
-    ./nginx.nix
     ./openssh.nix
     ./modular.nix
     ./phpfpm.nix
