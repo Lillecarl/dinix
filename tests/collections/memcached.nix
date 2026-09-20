@@ -1,7 +1,9 @@
 # A collection: the dinix configuration under test, plus what to ask the
-# running container. dev.nix turns this into an image, a guest and a test.
+# running system. dev.nix turns this into an image, a guest and a test.
 #
-# This is the whole of what a service port writes for its test. See PORTING.md.
+# memcached is authored as a NixOS Modular Service, so an instance is one
+# `system.services` entry importing the module. See services/memcached.nix and
+# PORTING.md.
 {
   pkgs,
   config,
@@ -9,6 +11,13 @@
   ...
 }:
 let
+  memcachedService = lib.modules.importApply ../../services/memcached.nix {
+    inherit (pkgs) memcached;
+  };
+
+  main = config.system.services.memcached-main.memcached;
+  alt = config.system.services.memcached-alt.memcached;
+
   # memcached ships no client, and the image holds only what the service
   # commands reference. The checks pipe a request into nc, and a pipe takes a
   # shell — named by absolute store path, since the image has no PATH and no
@@ -22,36 +31,38 @@ let
   ask =
     port: request:
     "${bash} -c \"printf '${request}\\r\\nquit\\r\\n' | ${nc} -w 2 127.0.0.1 ${toString port}\"";
+
+  # memcached refuses to run as root, and both ways out are used. Where dinit
+  # is root, run-as changes user before exec so the server never sees root.
+  # Everywhere else memcached's own -u drops privilege after startup, which
+  # needs root to begin with and is a no-op as nobody, where it resolves and
+  # re-applies itself. Every account resolves: dinix's user database in the
+  # containers, the guest's own in the vm modes.
+  #
+  # Two elements, not one string. A service manager that takes a command line
+  # quotes each argument, so `-u nobody` as one element would reach memcached
+  # as a user called " nobody". It worked before only because the old
+  # rendering joined the arguments and let dinit split them again.
+  dropPrivilege = [
+    "-u"
+    "nobody"
+  ];
 in
 {
-  memcached.main.enable = true;
-
-  # memcached refuses to run as root. Where dinit itself runs as root,
-  # run-as changes user before exec, so the server never sees root at all.
-  # run-as is a dinit setting, so it goes on the rendered service rather
-  # than on the memcached instance, and an unprivileged dinit cannot do it
-  # at all, so only a privileged configuration sets it.
-  # nobody is in the user database dinix writes, and dinit resolves the
-  # name against the passwd and group files the container mounts a file
-  # at a time.
-  services.memcached-main.run-as = lib.mkIf config.privileged "nobody";
+  system.services.memcached-main = {
+    imports = [ memcachedService ];
+    memcached.startArgs = dropPrivilege;
+    dinit.service.run-as = lib.mkIf config.privileged "nobody";
+  };
 
   # A second instance on its own port. Two of them under the same key is what
   # catches instances sharing state, as in the redis collection.
-  memcached.alt = {
-    enable = true;
-    port = 11311;
+  system.services.memcached-alt = {
+    imports = [ memcachedService ];
+    memcached.port = 11311;
+    memcached.startArgs = dropPrivilege;
+    dinit.service.run-as = lib.mkIf config.privileged "nobody";
   };
-  services.memcached-alt.run-as = lib.mkIf config.privileged "nobody";
-
-  # A configuration without run-as can still reach root: an uncontained
-  # dinit runs as whatever user starts it. memcached's own -u flag drops privilege after
-  # startup instead, which needs no privilege but root to begin with and is
-  # a no-op everywhere else — as nobody it resolves and re-applies itself.
-  # Every account here resolves: dinix's user database in the containers,
-  # the guest's own in the vm modes.
-  memcached.main.startArgs = [ "-u nobody" ];
-  memcached.alt.startArgs = [ "-u nobody" ];
 
   collection = {
     packages = [
@@ -62,17 +73,17 @@ in
     checks = [
       {
         name = "memcached answers on its TCP port";
-        command = ask config.memcached.main.port "version";
+        command = ask main.port "version";
         expect = "VERSION";
       }
       {
         name = "a value writes to the first instance";
-        command = ask config.memcached.main.port "set dinix 0 0 9\\r\\nfrom-main";
+        command = ask main.port "set dinix 0 0 9\\r\\nfrom-main";
         expect = "STORED";
       }
       {
         name = "and another under the same key to the second";
-        command = ask config.memcached.alt.port "set dinix 0 0 8\\r\\nfrom-alt";
+        command = ask alt.port "set dinix 0 0 8\\r\\nfrom-alt";
         expect = "STORED";
       }
       {
@@ -80,7 +91,7 @@ in
         # main port proves the instances keep separate data, which a count of
         # keys would not.
         name = "and the two keep separate data";
-        command = ask config.memcached.main.port "get dinix";
+        command = ask main.port "get dinix";
         expect = "from-main";
       }
     ];
