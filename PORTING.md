@@ -171,6 +171,36 @@ Six things change on the way across, and they are the whole of the work:
   Everything dinix generates is world-readable. See the host key note in
   README.md.
 
+## Initialising a data directory once
+
+`initdb` exits 1 on a directory that is not empty — measured — so "initialise
+if it has not been initialised" is a conditional. PostgreSQL, MySQL and
+MongoDB all want one, and a shell is the usual answer.
+
+Use `dinix-unless` instead, which is {option}`unlessPackage`:
+
+```nix
+outputs.services."${config.serviceName}-init" = {
+  type = "scripted";
+  command = toString [
+    (lib.getExe config.unlessPackage)
+    "${config.dataDir}/PG_VERSION"          # the marker
+    (lib.getExe' config.package "initdb")   # run only if it is absent
+    "-D" config.dataDir
+  ];
+};
+outputs.services.${config.serviceName}.depends-on = [ "${config.serviceName}-init" ];
+```
+
+It execs the program when the marker is missing and exits 0 when it is there,
+so the dependency stays a real one: a first run that genuinely fails still
+stops the service that needs it.
+
+It is not a small shell — no `PATH` search, no expansion, no interpretation —
+and it is a separate binary from `dinix-init`, which is in every image and
+must never be able to run anything. This one reaches only the closures that
+name it.
+
 ## Licensing
 
 services-flake is Apache-2.0. A ported module keeps a comment at the top

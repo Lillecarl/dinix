@@ -722,6 +722,31 @@ in
       '';
     };
 
+    unlessPackage = mkOption {
+      type = types.package;
+      default = pkgs.callPackage ./dinix-unless/package.nix { };
+      description = ''
+        `dinix-unless <marker> <program> [argument ...]`, which execs the
+        program only when the marker path is absent. About 320 KiB, no
+        dependencies, and nothing references it until a service does — so it
+        reaches no image that has not asked for it.
+
+        This is for a service that initialises its own data directory once.
+        `initdb` exits 1 on a directory that is not empty, and MySQL and
+        MongoDB behave the same way, so "do it if it has not been done" is a
+        conditional. A shell is the usual answer and costs an interpreter and
+        a few hundred commands in an image that otherwise has neither.
+
+        It is a separate binary from {option}`initPackage` on purpose:
+        `dinix-init` is in every image and must never be able to run a
+        program. This one can, and so is kept out of the images that do not
+        need it. It is still not a small shell — no `PATH` search, no
+        expansion, no interpretation: the program is the second argument and
+        the rest are passed through. dinit has already substituted the command
+        line before it runs.
+      '';
+    };
+
     logBufferSize = mkOption {
       type = types.int;
       default = 262144;

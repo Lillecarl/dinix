@@ -1,0 +1,15 @@
+[package]
+name = "dinix-unless"
+version = "0.1.0"
+edition = "2021"
+
+# No dependencies, as for dinix-init: everything here is in std, so the build
+# is hermetic and the binary is small.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

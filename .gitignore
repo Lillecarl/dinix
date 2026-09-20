@@ -1,4 +1,5 @@
 /dinix-init/target/
+/dinix-unless/target/
 __pycache__/
 *.py[cod]
 /result
