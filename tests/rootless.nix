@@ -2,9 +2,13 @@
 #
 # sshd decides by its own uid whether it separates privileges, so this is a
 # second image and not a second flag on the first one.
-_:
-{
-  openssh.rootless = true;
+_: {
+  system.services.sshd.openssh.rootless = true;
+
+  # A rootless sshd asks for no account of its own, so nothing else turns the
+  # database on. The one account below is still needed, and sshd fails a login
+  # it cannot find in passwd.
+  users.enable = true;
 
   # A rootless sshd serves one account and cannot change uid, so this has to be
   # the uid the container runs as. /bin/sh comes from the busybox the image

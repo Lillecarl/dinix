@@ -1,14 +1,20 @@
 # The dinix configuration the container test runs. sshd is the subject: it is
 # the fussiest common daemon about paths and permissions, so it exercises
 # dirs, the user database and the log routing in one container.
-{ clientKey, pkgs, ... }:
 {
-  openssh = {
-    enable = true;
+  clientKey,
+  pkgs,
+  lib,
+  ...
+}:
+{
+  system.services.sshd = {
+    imports = [ (lib.modules.importApply ../services/openssh.nix { inherit (pkgs) openssh; }) ];
+
     # Keys made at startup rather than mounted, so the test covers the
-    # sshd-keygen service and the directory dinix-init makes for it.
-    generateHostKeys.enable = true;
-    settings = {
+    # sshd-keygen sub-service and the directory dinix-init makes for it.
+    openssh.generateHostKeys.enable = true;
+    openssh.settings = {
       Port = 2222;
       PermitRootLogin = "prohibit-password";
       AuthorizedKeysFile = "${clientKey}/authorized_keys";
@@ -58,5 +64,5 @@
 
   # sshd is the reason this container exists, so stopping it must stop the
   # container. The test checks that.
-  services.sshd.dinix.critical = true;
+  system.services.sshd.dinit.service.dinix.critical = true;
 }

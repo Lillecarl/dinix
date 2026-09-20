@@ -54,6 +54,38 @@ services.nginx = {
 };
 ```
 
+## Modular services
+
+[Modular Services](https://nixos.org/manual/nixos/unstable/#modular-services)
+are nixpkgs' portable service modules: a module says what to run without saying
+who runs it, so one module works under systemd, under finit and under dinit.
+dinix implements the interface, and `system.services.<name>` is where one goes.
+
+```nix
+system.services.tunnel = {
+  imports = [ pkgs.ghostunnel.services.default ];
+  ghostunnel.listen = "127.0.0.1:8443";
+  dinit.service.dinix.critical = true;
+};
+```
+
+Each entry becomes a dinit service of the same name, and a sub-service becomes
+`<parent>-<child>`. A module carries a file through `configData`, and reads
+back where it landed from `configData.<name>.path`.
+
+**Every service dinix authors is one of these**, in `services/`. The portable
+layer declares no state, no user and no ownership, so dinix adds a `dinit` tree
+beside it: `dinit.stateDir`, `dinit.dirs`, `dinit.mustExist`, `dinit.users`,
+`dinit.groups`, and `dinit.service` for anything DINIT-SERVICE(5) takes. A
+module reaches them through `lib.optionalAttrs (options ? dinit)` and still
+evaluates where dinit is absent — the same way nixpkgs' own `php` module
+carries its systemd and finit sections.
+
+[Issue #15](https://github.com/Lillecarl/dinix/issues/15) collects what the
+interface cannot express yet. `tests/collections/modular.nix` and
+`tests/collections/php-upstream.nix` run nixpkgs' own modules unmodified, so
+the implementation is measured against them rather than against itself.
+
 ## Running in a container
 
 A container runtime restarts a container when its PID 1 exits. So a service
@@ -231,18 +263,18 @@ startup instead. It is off by default, and turning it on makes
 
 ## OpenSSH
 
-`openssh.enable` renders `sshd_config`, adds an `sshd` service, and supplies
-the three things sshd needs from the system around it. It is the first service
-dinix owns, so the options sit beside `users` rather than under `services`,
-which holds dinit service descriptions.
+`services/openssh.nix` renders `sshd_config`, runs `sshd`, and supplies the
+three things sshd needs from the system around it. It is a
+[modular service](#modular-services), like everything else dinix authors, so
+one entry in `system.services` is one sshd:
 
 ```nix
-openssh = {
-  enable = true;
-  hostKeys = [ "/keys/ssh_host_ed25519_key" ];
-  settings.PermitRootLogin = "prohibit-password";
+system.services.sshd = {
+  imports = [ (lib.modules.importApply ./services/openssh.nix { inherit (pkgs) openssh; }) ];
+  openssh.hostKeys = [ "/keys/ssh_host_ed25519_key" ];
+  openssh.settings.PermitRootLogin = "prohibit-password";
+  dinit.service.dinix.critical = true;
 };
-services.sshd.dinix.critical = true;
 ```
 
 `settings` is one attribute per `sshd_config` keyword. A keyword that may
@@ -261,8 +293,8 @@ root, and so is the file. A Kubernetes secret arrives 0644 unless
 `UNPROTECTED PRIVATE KEY FILE`, ignores the key, and then exits because it has
 none. Measured against OpenSSH 10.5p1, `authfile.c`.
 
-`openssh.generateHostKeys.enable` makes them at startup instead, with an
-`sshd-keygen` service that `sshd` depends on. `ssh-keygen -A` makes a key of
+`openssh.generateHostKeys.enable` makes them at startup instead, with a
+`keygen` sub-service that `sshd` depends on. `ssh-keygen -A` makes a key of
 every type that has none, so it is one exec with no shell and it is safe to
 run again. Two things to know: `-f` takes a **prefix**, not a directory, so
 keys land in `<root>/etc/ssh/`; and on a volume that keeps nothing the host
@@ -276,7 +308,7 @@ privilege separation directory must not be writable by group or others. A
 Kubernetes `emptyDir` and a `podman --tmpfs` both arrive 1777, so the mode is
 set rather than assumed.
 
-`services.sshd.dinix.critical` defaults to `false`, which starts sshd and lets
+`dinit.service.dinix.critical` defaults to `false`, which starts sshd and lets
 it crash and restart without taking the container down. Set it to `true` where
 sshd is the reason the container exists.
 
@@ -289,7 +321,7 @@ path. Nothing dinix runs itself needs this.
 
 ### sshd without root
 
-`openssh.rootless = true` is the shape for a container that must not run as
+`openssh.rootless = true` on the service is the shape for a container that must not run as
 root. sshd decides this by its own uid rather than by configuration, so the
 option tells dinix which shape to render. Measured against OpenSSH 10.5p1 by
 running both:
@@ -313,41 +345,40 @@ and no one else.
 
 ## Redis
 
-`redis.<instance>` runs one or more redis servers. The options are
+`services/redis.nix` runs a redis server. The options are
 [services-flake](https://github.com/juspay/services-flake)'s, option for
-option:
+option, and an instance is one `system.services` entry:
 
 ```nix
-redis.main.enable = true;
-redis.cache = {
-  enable = true;
-  port = 6380;
+system.services.redis-main.imports = [ redisService ];
+system.services.redis-cache = {
+  imports = [ redisService ];
+  redis.port = 6380;
 };
 ```
 
-Each instance becomes a dinit service called `redis-<instance>`, and its
-`dataDir` becomes a `dirs` entry. No shell: services-flake wraps redis in a
-start script to make that directory, and dinix has already made it before any
-service starts.
+Each entry becomes a dinit service of the same name, and its `dataDir` becomes
+a `dirs` entry. No shell: services-flake wraps redis in a start script to make
+that directory, and dinix has already made it before any service starts.
 
 This is the worked example for [PORTING.md](PORTING.md). The rest of that
 catalogue — MySQL, MongoDB and about thirty others — is mostly the same work.
 
 ## PostgreSQL
 
-`postgres.<instance>` runs a cluster, with the options services-flake gives
+`services/postgres.nix` runs a cluster, with the options services-flake gives
 it:
 
 ```nix
-postgres.main = {
-  enable = true;
-  port = 5432;
-  settings.log_connections = true;
+system.services.postgres-main = {
+  imports = [ postgresService ];
+  postgres.port = 5432;
+  postgres.settings.log_connections = true;
 };
 ```
 
-Two services: `postgres-<instance>-init` runs `initdb` once, and
-`postgres-<instance>` depends on it.
+Two services: `initdb` is a sub-service, rendered as
+`postgres-main-init`, and the server depends on it.
 
 **Settings go on the command line, not into a `postgresql.conf`.** Each one
 becomes a `-c name=value` argument, so nothing is written into `PGDATA` at
@@ -370,8 +401,9 @@ rather than waiting for clients to leave. Without it a container waits out its
 grace period whenever anything is connected.
 
 **postgres refuses to run as root**, and so does `initdb`. Where dinit is
-root, give both services `run-as` and own the directories to that account; the
-collection in `tests/collections/postgres.nix` shows the shape.
+root, give the service and its sub-service `dinit.service.run-as` and own the
+directories to that account; the collection in
+`tests/collections/postgres.nix` shows the shape.
 
 **A postgres image needs `/bin/sh`**, which no other dinix service does.
 `initdb` runs `"<bindir>/postgres" -V` through `popen` to check the server it
@@ -386,22 +418,22 @@ question — see [issue #12](https://github.com/Lillecarl/dinix/issues/12).
 
 ## Memcached
 
-`memcached.<instance>` runs one or more memcached servers. The options are
+`services/memcached.nix` runs a memcached server. The options are
 services-flake's, option for option: `package`, `bind`, `port`, `startArgs`.
 
 ```nix
-memcached.main.enable = true;
+system.services.memcached-main.imports = [ memcachedService ];
 ```
 
-Each instance becomes a dinit service called `memcached-<instance>`. memcached
-keeps no data on disk, so unlike redis there is no `dirs` entry and `dataDir`
-sits unused — the same shape the services-flake module has.
+memcached keeps no data on disk, so unlike redis it asks for no directory and
+has no `dataDir` — the services-flake module leaves its own unused.
 
 **memcached refuses to run as root, and the container runs as root.** Set
-`memcached.<name>.run-as = "nobody"` — dinit changes user before exec, so the
+`dinit.service.run-as = "nobody"` — dinit changes user before exec, so the
 server never sees root and needs no `-u`. `nobody` is in the user database
 dinix writes, and dinit resolves the name against the passwd and group files
-the container mounts a file at a time.
+the container mounts a file at a time. Where dinit is not root, memcached's own
+`-u` does it instead, as `startArgs`.
 
 The test also shows [PORTING.md](PORTING.md)'s `collection.packages`: a check
 that asks the service a question needs a client, and memcached ships none.
@@ -465,6 +497,11 @@ expression can know a store path before it is built.
 Set `consolidateConfig = false` where store paths are not layers, such as a
 runtime that mounts the closure directly. Each piece is then its own path, and
 changing one service does not rebuild the rest.
+
+**`configData` is the exception**: a modular service's files live inside
+`configDir` either way, because the service description names them by a path
+the builder substitutes. See
+[issue #16](https://github.com/Lillecarl/dinix/issues/16).
 
 `dev.nix` builds both images and reports on them. It is not imported by
 `default.nix`, so nix2container never reaches a consumer's closure:

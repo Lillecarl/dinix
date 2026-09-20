@@ -151,7 +151,7 @@ let
         clientKey = "${clientKey}";
         configDir = "${dinix.config.configDir}";
         dinitctl = "${dinix.config.containerWrapper}/bin/dinitctl";
-        port = dinix.config.openssh.settings.Port;
+        port = dinix.config.system.services.sshd.openssh.settings.Port;
         caBundle = dinix.config.caCertificates.file;
         # /run holds dinit's control socket and the generated host keys.
         # /var/empty is sshd's privilege separation directory, which a rootless

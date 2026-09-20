@@ -473,7 +473,6 @@ in
 {
   imports = [
     ./cacert.nix
-    ./openssh.nix
     ./modular.nix
     ./users.nix
   ];

@@ -1,23 +1,31 @@
+# sshd, as a NixOS Modular Service.
+#
+# Written here rather than ported: dinix needs an sshd that runs in a rootful
+# container, a rootless one and uncontained, and no upstream modular service
+# offers one. See PORTING.md for the shape and services/redis.nix for the
+# conventions.
+{ openssh }:
+
 {
   config,
-  pkgs,
+  options,
+  name,
   lib,
   ...
 }:
 let
-  cfg = config.openssh;
-
   inherit (lib)
     concatLines
     getExe'
     mkDefault
-    mkIf
     mkOption
     optionalAttrs
     types
     ;
 
-  # sshd_config is "Keyword value", one per line. A keyword dinit may repeat,
+  cfg = config.openssh;
+
+  # sshd_config is "Keyword value", one per line. A keyword sshd may repeat,
   # HostKey and Port among them, takes a list here and becomes one line each.
   renderValue =
     value:
@@ -55,39 +63,15 @@ let
       [ value ];
 
   privilegedPorts = builtins.filter (port: lib.toInt (toString port) < 1024) ports;
-
-  # sshd exits when it can load no host key, and says so in terms of the key
-  # it looked for rather than of the configuration that named none.
-  checkedSettings = lib.pipe settingsText [
-    (lib.throwIf (hostKeys == [ ]) ''
-      openssh.enable is set but there are no host keys. Either name the files a
-      volume provides in openssh.hostKeys, or set
-      openssh.generateHostKeys.enable to make them at startup.
-    '')
-    (lib.throwIf (cfg.rootless && privilegedPorts != [ ]) ''
-      openssh.rootless is set, so sshd cannot bind port ${
-        lib.concatMapStringsSep ", " toString privilegedPorts
-      }. Only root may bind below 1024. Set openssh.settings.Port to a port
-      above it, and map it from outside the container.
-    '')
-  ];
-
-  # The description cannot name configDir, because configDir is built from the
-  # descriptions. The builder substitutes the marker for $out. See
-  # internal.initSpecPath, which has the same problem.
-  configPath =
-    if config.consolidateConfig then
-      "@configDir@/etc/ssh/sshd_config"
-    else
-      toString (pkgs.writeText "sshd_config" checkedSettings);
 in
 {
-  options.openssh = {
-    enable = lib.mkEnableOption "an sshd service";
+  _class = "service";
 
+  options.openssh = {
     package = mkOption {
       type = types.package;
-      default = pkgs.openssh;
+      default = openssh;
+      defaultText = lib.literalMD "the openssh given to this module";
       description = "The OpenSSH package to run and to take `ssh-keygen` from.";
     };
 
@@ -157,7 +141,8 @@ in
 
           **It is a prefix, not a directory.** ssh-keygen appends the built-in
           path to it, so keys land in `<root>/etc/ssh/` and not in `<root>`.
-          {option}`generateHostKeys.dir` is that directory, and dinix makes it.
+          {option}`openssh.generateHostKeys.dir` is that directory, and dinix
+          makes it.
 
           The default is under `/run`, which a container usually has as a
           writable volume. On a volume that keeps nothing the host identity
@@ -227,84 +212,130 @@ in
     };
   };
 
-  config = mkIf cfg.enable {
-    openssh.settings = {
-      HostKey = mkDefault hostKeys;
-      Port = mkDefault (if cfg.rootless then 2222 else 22);
-      # sshd writes a pid file even with -D, and a container root filesystem
-      # is usually read-only. Nothing here reads it: dinit is the supervisor.
-      PidFile = mkDefault "none";
-      # nixpkgs builds with PAM, and a container has no PAM configuration.
-      UsePAM = mkDefault false;
-      # Every account dinix writes has a locked password, so this could only
-      # ever fail.
-      PasswordAuthentication = mkDefault false;
-      Subsystem = mkDefault "sftp ${cfg.package}/libexec/sftp-server";
-    };
-
-    # sshd calls getpwnam for the account that logs in, and fails the login
-    # when it is missing, so the database has to be there either way.
-    users.enable = true;
-    users.users = optionalAttrs (!cfg.rootless) {
-      sshd = {
-        inherit (cfg) uid gid;
-        comment = "Privilege separation user for sshd";
-        homeDir = "/var/empty";
-        shell = "/sbin/nologin";
-      };
-    };
-    users.groups = optionalAttrs (!cfg.rootless) { sshd.gid = cfg.gid; };
-
-    dirs =
-      optionalAttrs (!cfg.rootless) {
-        # sshd chroots its unprivileged process here and checks the directory
-        # first: it must be a directory, owned by root, and not writable by
-        # group or others. A Kubernetes emptyDir and a podman --tmpfs both
-        # arrive 1777, which fails that check, so the mode is set rather than
-        # assumed. Measured against OpenSSH 10.5p1, sshd.c.
-        "/var/empty" = {
-          mode = "0755";
-          uid = 0;
-          gid = 0;
-        };
-      }
-      // optionalAttrs cfg.generateHostKeys.enable {
-        # ssh-keygen -A opens the key files directly and makes no directory.
-        # No owner when rootless: only root may chown, and the directory
-        # already belongs to whoever dinit runs as.
-        ${cfg.generateHostKeys.dir} = {
-          mode = "0700";
-          uid = if cfg.rootless then null else 0;
-          gid = if cfg.rootless then null else 0;
-        };
+  config = lib.mkMerge [
+    {
+      openssh.settings = {
+        HostKey = mkDefault hostKeys;
+        Port = mkDefault (if cfg.rootless then 2222 else 22);
+        # sshd writes a pid file even with -D, and a container root filesystem
+        # is usually read-only. Nothing here reads it: dinit is the supervisor.
+        PidFile = mkDefault "none";
+        # nixpkgs builds with PAM, and a container has no PAM configuration.
+        UsePAM = mkDefault false;
+        # Every account dinix writes has a locked password, so this could only
+        # ever fail.
+        PasswordAuthentication = mkDefault false;
+        Subsystem = mkDefault "sftp ${cfg.package}/libexec/sftp-server";
       };
 
-    mustExist = lib.listToAttrs (map (path: lib.nameValuePair path { kind = "file"; }) cfg.hostKeys);
+      configData."sshd_config".text = settingsText;
 
-    internal.etcFiles = optionalAttrs config.consolidateConfig {
-      "etc/ssh/sshd_config" = checkedSettings;
-    };
+      # sshd exits when it can load no host key, and says so in terms of the
+      # key it looked for rather than of the configuration that named none.
+      assertions = [
+        {
+          assertion = hostKeys != [ ];
+          message = ''
+            This sshd has no host keys. Either name the files a volume provides
+            in openssh.hostKeys, or set openssh.generateHostKeys.enable to make
+            them at startup.
+          '';
+        }
+        {
+          assertion = !cfg.rootless || privilegedPorts == [ ];
+          message = ''
+            openssh.rootless is set, so sshd cannot bind port ${
+              lib.concatMapStringsSep ", " toString privilegedPorts
+            }. Only root may bind below 1024. Set openssh.settings.Port to a
+            port above it, and map it from outside the container.
+          '';
+        }
+      ];
 
-    services.sshd = {
-      type = "process";
       # -e sends the log to standard error, which is what dinix.log = "console"
       # then carries. Without it sshd talks to a syslog no container has.
-      command = "${getExe' cfg.package "sshd"} -D -e -f ${configPath}";
-      depends-on = lib.optional cfg.generateHostKeys.enable "sshd-keygen";
-      # A service boot neither depends on nor waits for never starts at all,
-      # so enabling this module has to attach sshd to boot. false is the
-      # attachment that cannot surprise: sshd starts, and it can die and
-      # restart without taking the container with it. Set it to true where
-      # sshd is the reason the container exists.
-      dinix.critical = mkDefault false;
-    };
+      process.argv = [
+        (getExe' cfg.package "sshd")
+        "-D"
+        "-e"
+        "-f"
+        config.configData."sshd_config".path
+      ];
 
-    services.sshd-keygen = mkIf cfg.generateHostKeys.enable {
-      type = "scripted";
-      # -A makes one key of every type that has none, so this is a plain exec
-      # with no shell and it is safe to run again.
-      command = "${getExe' cfg.package "ssh-keygen"} -A -f ${cfg.generateHostKeys.root}";
-      dinix.log = "console";
-    };
-  };
+      services = optionalAttrs cfg.generateHostKeys.enable {
+        # -A makes one key of every type that has none, so this is a plain exec
+        # with no shell and it is safe to run again.
+        keygen.process.argv = [
+          (getExe' cfg.package "ssh-keygen")
+          "-A"
+          "-f"
+          cfg.generateHostKeys.root
+        ];
+      };
+    }
+
+    (lib.optionalAttrs (options ? dinit) {
+      # sshd calls getpwnam for the account that logs in, and fails the login
+      # when it is missing, so the database has to be there either way. A
+      # rootless sshd needs no privilege separation account of its own.
+      dinit.users = optionalAttrs (!cfg.rootless) {
+        sshd = {
+          inherit (cfg) uid gid;
+          comment = "Privilege separation user for sshd";
+          homeDir = "/var/empty";
+          shell = "/sbin/nologin";
+        };
+      };
+      dinit.groups = optionalAttrs (!cfg.rootless) { sshd.gid = cfg.gid; };
+
+      dinit.dirs =
+        optionalAttrs (!cfg.rootless) {
+          # sshd chroots its unprivileged process here and checks the directory
+          # first: it must be a directory, owned by root, and not writable by
+          # group or others. A Kubernetes emptyDir and a podman --tmpfs both
+          # arrive 1777, which fails that check, so the mode is set rather than
+          # assumed. Measured against OpenSSH 10.5p1, sshd.c.
+          "/var/empty" = {
+            mode = "0755";
+            uid = 0;
+            gid = 0;
+          };
+        }
+        // optionalAttrs cfg.generateHostKeys.enable {
+          # ssh-keygen -A opens the key files directly and makes no directory.
+          # No owner when rootless: only root may chown, and the directory
+          # already belongs to whoever dinit runs as.
+          ${cfg.generateHostKeys.dir} = {
+            mode = "0700";
+            uid = if cfg.rootless then null else 0;
+            gid = if cfg.rootless then null else 0;
+          };
+        };
+
+      dinit.mustExist = lib.listToAttrs (
+        map (path: lib.nameValuePair path { kind = "file"; }) cfg.hostKeys
+      );
+
+      dinit.service = {
+        # What dinix calls a sub-service: this service's name and the
+        # sub-service's, joined by a dash.
+        depends-on = lib.optional cfg.generateHostKeys.enable "${name}-keygen";
+        # A service boot neither depends on nor waits for never starts at all,
+        # so enabling this module has to attach sshd to boot. false is the
+        # attachment that cannot surprise: sshd starts, and it can die and
+        # restart without taking the container with it. Set it to true where
+        # sshd is the reason the container exists.
+        dinix.critical = mkDefault false;
+      };
+
+      services = optionalAttrs cfg.generateHostKeys.enable {
+        keygen.dinit.service = {
+          type = "scripted";
+          dinix.log = "console";
+        };
+      };
+    })
+  ];
+
+  meta.maintainers = [ ];
 }
