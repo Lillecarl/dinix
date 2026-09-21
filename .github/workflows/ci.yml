@@ -10,6 +10,13 @@ on:
   push: {}
   pull_request: {}
   workflow_dispatch: {}
+  # modular.nix tracks a NixOS interface the manual still calls unstable, and
+  # the runner feeds dev.nix unpinned nixpkgs-unstable. Without a schedule
+  # only a push answers whether upstream moved, so a quiet week answers
+  # nothing. Off the hour, because GitHub delays a cron that starts on one.
+  # A schedule stops running after 60 days with no repository activity.
+  schedule:
+    - cron: "17 4 * * 1"
 
 jobs:
   checks:
