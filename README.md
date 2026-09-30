@@ -454,6 +454,10 @@ follows is the one thing that was not obvious about it.
 | `mailpit.nix` | no configuration file at all. `--database` is not optional in practice: without it mailpit writes a temporary file under `$TMPDIR`. |
 | `mosquitto.nix` | `persistence_location` exists only in the configuration file, so a persistent broker gets its path as `working-dir`. `user root` stops it dropping to `nobody` and losing the ability to write. |
 | `caddy.nix` | the state directory arrives as `XDG_DATA_HOME` and `XDG_CONFIG_HOME`, so `env` carries it. |
+| `mongodb.nix` | `mongodb-ce` is unfree, so the package set needs `config.allowUnfree`. The storage path is a command-line flag, so there is no config file. |
+| `meilisearch.nix` | configured only through `MEILI_*` variables, the database path among them, so `env` carries them. |
+| `mailhog.nix` | no configuration file and nothing on disk. The binary is `MailHog`, which is not the package name. |
+| `garage.nix` | the data directories are not a flag and not an environment override, so the TOML is written at startup, and a scripted sub-service applies the cluster layout once. One of the rare ports whose image carries a shell. |
 
 ## CA certificates
 
