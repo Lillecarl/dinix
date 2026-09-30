@@ -458,6 +458,7 @@ follows is the one thing that was not obvious about it.
 | `meilisearch.nix` | configured only through `MEILI_*` variables, the database path among them, so `env` carries them. |
 | `mailhog.nix` | no configuration file and nothing on disk. The binary is `MailHog`, which is not the package name. |
 | `garage.nix` | the data directories are not a flag and not an environment override, so the TOML is written at startup, and a scripted sub-service applies the cluster layout once. One of the rare ports whose image carries a shell. |
+| `kubernetes.nix` | the control plane is ordinary unprivileged userland — no cgroup, no container — so it needs no root; a node that runs pods does, so kwok answers for the nodes instead. The certificates and the kubeconfig cannot live in a store path, so a scripted sub-service writes them with openssl, which makes this a second shell port. etcd refuses to start unless `--initial-cluster` agrees with `--initial-advertise-peer-urls`. |
 
 ## CA certificates
 
