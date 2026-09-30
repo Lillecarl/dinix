@@ -1,16 +1,67 @@
-# dinix TUI example
+# dinix examples
 
-A quick look at the TUI. One command starts dinit from a small configuration
-and opens the interface on it.
+Every file under `examples/` is a complete dinix configuration. It evaluates on
+its own, and `dev.nix` wraps each one in a runner that starts dinit and opens
+the TUI on it.
 
 ```sh
-nix run --file ./dev.nix example
+nix run --file ./dev.nix examples.services.redis
 ```
 
-`examples/hello.nix` defines two services: `hello` is a process that prints a
-line and sleeps, and `world` is internal. Both appear when the TUI connects.
+The runner makes a temporary runtime directory and points `DINIX_STATE_DIR` at
+a writable one, so a service that keeps state needs nothing set up.
 
-## Keys
+A file runs without the TUI as well. Then you choose both directories:
+
+```sh
+DINIX_STATE_DIR=$PWD/state nix run --file ./examples/services/redis.nix config.userWrapper -- --user
+```
+
+## What each one shows
+
+| Example | Shows |
+| --- | --- |
+| `examples.hello` | the quick start: two services, one process and one internal |
+| `examples.features.dependencies` | `depends-on`, `waits-for` and `after` |
+| `examples.features.restart` | automatic restart, with the limit lifted |
+| `examples.features.logs` | the `console`, `buffer` and `file` log destinations |
+| `examples.features.ready` | `ready-notification`, so a dependent waits for STARTED |
+| `examples.features.critical` | `dinix.critical`, and what a service stopping means |
+| `examples.services.redis` | redis, from the modular-service port |
+| `examples.services.postgres` | postgres, with `initdb` as a run-once sub-service |
+| `examples.services.nginx` | nginx, serving a store path |
+| `examples.services.memcached` | memcached, the simplest port |
+| `examples.containers.redis` | a container image, built by `dev.nix` |
+| `examples.containers.nginx` | a container image for nginx |
+| `examples.api.usage` | what `import ./dinix` returns |
+| `examples.api.modular` | a modular service defined inline |
+
+## Containers
+
+`dev.nix` builds the container images with nix2container and loads them with
+podman:
+
+```sh
+nix run --file ./dev.nix containers.redis.copyToPodman
+podman run --rm -it -p 6379:6379 dinix-example-redis:latest
+```
+
+The entrypoint is `config.containerWrapper`: dinit as PID 1, reading its
+services from the store, in an image with no shell and no writable root.
+
+## The API
+
+An example is an `import ../.. { modules = [ ... ]; }`. The result carries the
+evaluated configuration, so you can build any piece of it:
+
+```sh
+nix build --file ./examples/api/usage.nix config.configDir
+nix build --file ./examples/api/usage.nix config.containerWrapper
+```
+
+`examples/api/usage.nix` lists the attributes and what each one is for.
+
+## TUI keys
 
 | Key | Action |
 | --- | --- |
@@ -25,21 +76,18 @@ line and sleeps, and `world` is internal. Both appear when the TUI connects.
 | `f5` | refresh the service list |
 | `q` | quit |
 
-## Nix reload
+## Editing and nix reload
 
 `n` runs a rebuild command, points the runtime at its output, and reloads every
-service. The new description applies at the next start, so press `r` to restart
-one and see the change. `A` does the same and then restarts every running
-service, so the whole suite comes up on the new build in one key.
+service. The runner wires that command to `nix build --file <this example>
+config.configDir`, so an edit to the file is picked up on `n`. The new
+description applies at the next start: press `r` to restart one service, or `A`
+to rebuild and restart everything at once.
 
-The rebuild command's own output streams into the log pane, prefixed `nix|`, so
-a slow evaluation or build shows progress instead of a silent wait.
+The rebuild's own output streams into the log pane, prefixed `nix|`, so a slow
+evaluation shows progress instead of a silent wait.
 
-The example wires `n` to a fake rebuild that writes a new `hello` description.
-Press `n` then `r` and the log shows a different line. Press `n` again for a
-third.
-
-For a real project, set `DINIX_TUI_NIX_COMMAND` to a command that builds your
-configuration and prints its config directory. The wrapper's `dinit` searches
-`<DINIX_RUNTIME_DIR>/current` before the store, which is the pointer `n`
-repoints.
+For a project of your own, set `DINIX_TUI_NIX_COMMAND` to a command that
+builds your configuration and prints its config directory. The wrapper's
+`dinit` searches `<DINIX_RUNTIME_DIR>/current` before the store, which is the
+pointer `n` repoints.

@@ -102,75 +102,132 @@ let
   # The option reference, rendered from the doc comments in options.nix.
   docs = import ./docs { inherit pkgs; modules = [ ./demo.nix ]; };
 
-  # The example the README points at: a dinix instance with two services and
-  # the tuiWrapper that can run it. A single command starts a dinit from its
-  # store configuration and opens the TUI on it.
-  exampleInstance = import ./. {
-    inherit pkgs;
-    modules = [ ./examples/hello.nix ];
+  # A runnable example. The file evaluates to a dinix configuration; this wraps
+  # it in a shell script that starts dinit from its tuiWrapper on a fresh
+  # runtime directory and opens the TUI on the socket. nix reload rebuilds the
+  # same file and points the runtime at the result, so `n` after an edit adopts
+  # it.
+  exampleRunner =
+    label: file:
+    let
+      example = import file { inherit pkgs; };
+    in
+    pkgs.writeShellApplication {
+      name = "dinix-example-${label}";
+      runtimeInputs = [ pkgs.coreutils ];
+      text = ''
+        if [ -n "''${DINIX_RUNTIME_DIR:-}" ]; then
+          runtime_dir="$DINIX_RUNTIME_DIR"
+        else
+          runtime_dir="$(mktemp -d)"
+          created=1
+        fi
+        export DINIX_RUNTIME_DIR="$runtime_dir"
+        # Writable state, outside the store and outside the checkout, so a redis
+        # or a postgres in an example has somewhere to keep it. dinix-init makes
+        # the directories under it before anything starts.
+        export DINIX_STATE_DIR="''${DINIX_STATE_DIR:-$runtime_dir/state}"
+        # The contract nix reload expects: build a configuration and print its
+        # config directory. This rebuilds the example file itself.
+        export DINIX_TUI_NIX_COMMAND="nix build --file ${toString file} config.configDir --no-link --print-out-paths"
+
+        "${lib.getExe' example.config.tuiWrapper "dinit"}" &
+        dinit_pid=$!
+        cleanup() {
+          kill "$dinit_pid" 2>/dev/null || true
+          wait "$dinit_pid" 2>/dev/null || true
+          [ -n "''${created:-}" ] && rm --recursive --force "$runtime_dir"
+        }
+        trap cleanup EXIT
+
+        socket="$runtime_dir/control"
+        for _ in $(seq 1 100); do
+          [ -S "$socket" ] && break
+          sleep 0.05
+        done
+
+        ${lib.getExe tui} --socket-path "$socket"
+      '';
+    };
+
+  # Every example file, keyed the way the README names them. hello is a file;
+  # a category is a directory of files and nests one level deeper.
+  exampleFiles = {
+    hello = ./examples/hello.nix;
+    features = {
+      dependencies = ./examples/features/dependencies.nix;
+      restart = ./examples/features/restart.nix;
+      logs = ./examples/features/logs.nix;
+      ready = ./examples/features/ready.nix;
+      critical = ./examples/features/critical.nix;
+    };
+    services = {
+      redis = ./examples/services/redis.nix;
+      postgres = ./examples/services/postgres.nix;
+      nginx = ./examples/services/nginx.nix;
+      memcached = ./examples/services/memcached.nix;
+    };
+    containers = {
+      redis = ./examples/containers/redis.nix;
+      nginx = ./examples/containers/nginx.nix;
+    };
+    api = {
+      usage = ./examples/api/usage.nix;
+      modular = ./examples/api/modular.nix;
+    };
   };
 
-  # What a real rebuild command would be, faked. It writes a fresh hello
-  # description into a build directory under the runtime and prints that
-  # directory, which is the contract nix reload expects. Rebuilding twice
-  # prints two different lines, so pressing n then r visibly changes the log.
-  exampleRebuild = pkgs.writeShellApplication {
-    name = "dinix-demo-rebuild";
-    runtimeInputs = [ pkgs.coreutils ];
-    text = ''
-      runtime_dir="''${DINIX_RUNTIME_DIR:-.dinix}"
-      build="$runtime_dir/build"
-      services="$build/services"
-      mkdir --parents "$services"
-      marker="$runtime_dir/.demo-marker"
-      if [ -e "$marker" ]; then
-        message="rebuilt: second marker"
-        rm --force "$marker"
-      else
-        message="rebuilt: first marker"
-        : > "$marker"
-      fi
-      run="$services/hello-run"
-      printf '#!/bin/sh\necho %s\nexec sleep 3600\n' "$message" > "$run"
-      chmod +x "$run"
-      printf 'type = process\ncommand = %s\nlog-type = buffer\n' "$run" > "$services/hello"
-      printf '%s\n' "$build"
-    '';
-  };
+  # label is the dotted path, so the script and its failures name the example.
+  walkExamples =
+    label: node:
+    if builtins.isAttrs node then
+      lib.mapAttrs (segment: child: walkExamples "${label}.${segment}" child) node
+    else
+      exampleRunner (lib.removePrefix "." label) node;
 
-  # The quick start: start dinit from the example's store configuration in a
-  # fresh runtime directory, then open the TUI on its socket. nix reload is
-  # wired to the demo rebuild, so the whole feature is exercisable at once.
-  example = pkgs.writeShellApplication {
-    name = "dinix-tui-example";
-    runtimeInputs = [ pkgs.coreutils ];
-    text = ''
-      if [ -n "''${DINIX_RUNTIME_DIR:-}" ]; then
-        runtime_dir="$DINIX_RUNTIME_DIR"
-      else
-        runtime_dir="$(mktemp -d)"
-        created=1
-      fi
-      export DINIX_RUNTIME_DIR="$runtime_dir"
-      export DINIX_TUI_NIX_COMMAND="${lib.getExe exampleRebuild}"
+  examples = walkExamples "" exampleFiles;
 
-      "${lib.getExe' exampleInstance.config.tuiWrapper "dinit"}" &
-      dinit_pid=$!
-      cleanup() {
-        kill "$dinit_pid" 2>/dev/null || true
-        wait "$dinit_pid" 2>/dev/null || true
-        [ -n "''${created:-}" ] && rm --recursive --force "$runtime_dir"
-      }
-      trap cleanup EXIT
+  # Every example with a flat, dash-joined name, for the checks below.
+  flatExamples =
+    let
+      go =
+        prefix: node:
+        if builtins.isAttrs node then
+          lib.concatLists (
+            lib.mapAttrsToList (
+              segment: child: go (if prefix == "" then segment else "${prefix}-${segment}") child
+            ) node
+          )
+        else
+          [
+            {
+              name = prefix;
+              file = node;
+            }
+          ];
+    in
+    go "" exampleFiles;
 
-      socket="$runtime_dir/control"
-      for _ in $(seq 1 100); do
-        [ -S "$socket" ] && break
-        sleep 0.05
-      done
+  # The README quick start, kept under its old name.
+  example = examples.hello;
 
-      ${lib.getExe tui} --socket-path "$socket"
-    '';
+  # An image for a container example. The entrypoint is dinix's own container
+  # wrapper, so the image needs no shell and no writable root.
+  containerFor =
+    label: file:
+    let
+      example = import file { inherit pkgs; };
+    in
+    nix2container.buildImage {
+      name = "dinix-example-${label}";
+      tag = "latest";
+      config.entrypoint = [ (lib.getExe example.config.containerWrapper) ];
+      maxLayers = 100;
+    };
+
+  containers = lib.mapAttrs containerFor {
+    redis = ./examples/containers/redis.nix;
+    nginx = ./examples/containers/nginx.nix;
   };
 
   # Two dinix instances for the client's integration check, identical but for
@@ -541,6 +598,14 @@ let
         path = tuiIntegration;
       }
     ]
+    # Every example, evaluated, so a broken one fails CI rather than a user's
+    # first run.
+    ++ map (
+      example: {
+        name = "example-${example.name}";
+        path = (import example.file { inherit pkgs; }).config.configDir;
+      }
+    ) flatExamples
     ++ lib.concatLists (
       lib.mapAttrsToList (
         name: modes:
@@ -598,6 +663,8 @@ in
     dinitClientIntegration
     docs
     example
+    examples
+    containers
     format
     lint
     test
