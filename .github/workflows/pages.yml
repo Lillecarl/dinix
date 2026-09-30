@@ -49,10 +49,10 @@ jobs:
           nix build --print-build-logs --file ./dev.nix docs.site
           cp --recursive result site
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@main
         timeout-minutes: 5
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@main
         timeout-minutes: 5
         with:
           path: site
@@ -65,5 +65,5 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@main
         timeout-minutes: 10
