@@ -21,6 +21,7 @@ line and sleeps, and `world` is internal. Both appear when the TUI connects.
 | `l` | print the selected service's log |
 | `f` | follow the selected service's log (poll the buffer) |
 | `n` | nix reload: rebuild and adopt the new configuration |
+| `A` | reload all: rebuild, reload, and restart every running service |
 | `f5` | refresh the service list |
 | `q` | quit |
 
@@ -28,7 +29,11 @@ line and sleeps, and `world` is internal. Both appear when the TUI connects.
 
 `n` runs a rebuild command, points the runtime at its output, and reloads every
 service. The new description applies at the next start, so press `r` to restart
-one and see the change.
+one and see the change. `A` does the same and then restarts every running
+service, so the whole suite comes up on the new build in one key.
+
+The rebuild command's own output streams into the log pane, prefixed `nix|`, so
+a slow evaluation or build shows progress instead of a silent wait.
 
 The example wires `n` to a fake rebuild that writes a new `hello` description.
 Press `n` then `r` and the log shows a different line. Press `n` again for a

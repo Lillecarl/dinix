@@ -230,3 +230,41 @@ async def test_follow_clears_when_there_is_no_buffer() -> None:
         app.action_follow()
         await _until(pilot, lambda: app._following is None)
         assert "no log buffer" in _log_text(app)
+
+
+async def test_rebuild_all_restarts_only_started_services(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    build = _build(tmp_path, "hello")
+    client = FakeClient()
+
+    async def rebuild() -> str:
+        return str(build)
+
+    app = app_with(client, runtime_dir=str(runtime), rebuilder=rebuild)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: app.query_one(DataTable).row_count == 2)
+        app.action_rebuild()
+
+        def restarted() -> set[str]:
+            return {name for action, name in client.commands if action == "restart"}
+
+        await _until(pilot, lambda: "world" in restarted())
+    assert ("restart", "world") in client.commands
+    assert ("restart", "hello") not in client.commands
+
+
+async def test_rebuild_streams_the_command_output(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    build = _build(tmp_path, "hello")
+    client = FakeClient()
+    app = app_with(
+        client,
+        runtime_dir=str(runtime),
+        nix_command=f"echo building >&2; echo {build}",
+    )
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: app.query_one(DataTable).row_count == 2)
+        app.action_nix_reload()
+        await _until(pilot, lambda: "building" in _log_text(app))
+        await _until(pilot, lambda: (runtime / "current").exists())
+    assert os.readlink(runtime / "current") == str(build / "services")

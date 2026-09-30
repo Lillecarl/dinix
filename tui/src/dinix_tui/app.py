@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 
 import anyio
 from anyio import Path as AsyncPath
+from anyio.abc import ByteReceiveStream
 from dinit_client import CommandRejected, DinitClient, DinitError
 from dinit_client import protocol as p
 from rich.text import Text
@@ -83,6 +85,7 @@ class DinixApp(App[None]):
         Binding("l", "log", "Log"),
         Binding("f", "follow", "Follow"),
         Binding("n", "nix_reload", "Nix reload"),
+        Binding("A", "rebuild", "Reload all"),
         Binding("f5", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -187,6 +190,8 @@ class DinixApp(App[None]):
                     continue
                 if command.action == "nix-reload":
                     await self._nix_reload(client)
+                elif command.action == "rebuild-all":
+                    await self._nix_reload(client, restart_running=True)
                 elif command.action == "catlog" and command.service is not None:
                     data = await client.catlog(command.service)
                     self._log(data.decode("utf-8", "replace").rstrip() or "(empty log)")
@@ -228,13 +233,14 @@ class DinixApp(App[None]):
 
     # -- nix reload ------------------------------------------------------
 
-    async def _nix_reload(self, client: DinitClient) -> None:
+    async def _nix_reload(self, client: DinitClient, *, restart_running: bool = False) -> None:
         """Rebuild the configuration, adopt it, and reload every service.
 
-        Only a description changes here. A running service keeps its process
-        until it is restarted, so the new command or dependencies take effect
-        on the next start.
+        A reload swaps a description; a running process keeps running. With
+        ``restart_running``, every service that is started is restarted after
+        the reload, so the running set comes up on the new build.
         """
+        self.notify("Rebuilding...")
         self._log("nix reload: running the rebuild command")
         config_dir = await self._rebuild()
         services = AsyncPath(config_dir) / "services"
@@ -259,6 +265,19 @@ class DinixApp(App[None]):
             except DinitError as error:
                 self._log(f"[yellow]nix reload: {name}: {error}[/yellow]")
         self._log(f"nix reload: reloaded {count} service(s)")
+
+        if restart_running:
+            started = [
+                name
+                for name, status in (await client.list_services()).items()
+                if status.state is p.ServiceState.STARTED
+            ]
+            for name in sorted(started):
+                try:
+                    await client.restart(name)
+                    self._log(f"nix reload: restarted {name}")
+                except DinitError as error:
+                    self._log(f"[yellow]nix reload: restart {name}: {error}[/yellow]")
         self.notify("Nix reload complete")
 
     async def _rebuild(self) -> str:
@@ -266,14 +285,32 @@ class DinixApp(App[None]):
             return await self._rebuilder()
         if self._nix_command is None:
             raise RebuildError("no rebuild command configured")
-        result = await anyio.run_process(["sh", "-c", self._nix_command], check=False)
-        output = result.stdout.decode("utf-8", "replace")
-        if result.returncode != 0:
-            tail = "\n".join(output.strip().splitlines()[-3:])
-            raise RebuildError(f"command exited {result.returncode}: {tail}")
-        paths = [line.strip() for line in output.splitlines() if line.strip()]
+        # Nix writes evaluation and build progress to stderr, so stream both to
+        # the log: a long build then shows movement instead of a silent wait.
+        process = await anyio.open_process(
+            ["sh", "-c", self._nix_command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        paths: list[str] = []
+
+        async def drain(stream: ByteReceiveStream, collect: bool) -> None:
+            async for raw in stream:
+                for line in raw.decode("utf-8", "replace").splitlines():
+                    if collect:
+                        if line.strip():
+                            paths.append(line.strip())
+                    else:
+                        self._log_plain("nix| ", line)
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(drain, process.stdout, True)
+            group.start_soon(drain, process.stderr, False)
+        code = await process.wait()
+        if code != 0:
+            raise RebuildError(f"the rebuild command exited {code}")
         if not paths:
-            raise RebuildError("the command printed no path")
+            raise RebuildError("the rebuild command printed no path")
         return paths[-1]
 
     async def _point_at(self, services: AsyncPath) -> None:
@@ -313,6 +350,10 @@ class DinixApp(App[None]):
 
     def _log(self, message: str) -> None:
         self.query_one(RichLog).write(message)
+
+    def _log_plain(self, prefix: str, line: str) -> None:
+        # A child process's output is not markup; Text keeps brackets literal.
+        self.query_one(RichLog).write(Text.assemble((prefix, "dim"), line))
 
     @on(DataTable.RowHighlighted)
     def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -386,6 +427,16 @@ class DinixApp(App[None]):
             return
         with suppress(anyio.WouldBlock):
             self._commands_send.send_nowait(Command("nix-reload"))
+
+    def action_rebuild(self) -> None:
+        if self._rebuilder is None and self._nix_command is None:
+            self.notify(
+                "Set DINIX_TUI_NIX_COMMAND to enable reload all",
+                severity="warning",
+            )
+            return
+        with suppress(anyio.WouldBlock):
+            self._commands_send.send_nowait(Command("rebuild-all"))
 
 
 def main() -> None:
