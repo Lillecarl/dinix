@@ -892,12 +892,16 @@ in
         dinit for a TUI-driven developer runtime.
 
         Unlike {option}`userWrapper`, it reads its runtime directory from the
-        environment, so one store path serves every checkout. It searches a
-        writable `<DINIX_RUNTIME_DIR>/services` before the store's services, so
-        a description written there shadows the built one, and it puts its
-        control socket at `<DINIX_RUNTIME_DIR>/control`. `DINIX_RUNTIME_DIR`
-        defaults to `.dinix` in the working directory the wrapper is run from,
-        which lets a TUI keep everything under the repository it manages.
+        environment, so one store path serves every checkout. It searches, in
+        order, a writable `<DINIX_RUNTIME_DIR>/services` and a
+        `<DINIX_RUNTIME_DIR>/current` symbolic link before the store's
+        services. A description written into either shadows the built one. The
+        link is what the TUI repoints at a fresh build's `services` directory
+        when it reloads, so a running dinit adopts the new configuration
+        without a restart. It puts its control socket at
+        `<DINIX_RUNTIME_DIR>/control`. `DINIX_RUNTIME_DIR` defaults to `.dinix`
+        in the working directory the wrapper is run from, which lets a TUI keep
+        everything under the repository it manages.
 
         Its `dinitctl` and `dinit-monitor` use the same socket.
 
@@ -1236,13 +1240,16 @@ in
             text = ''
               ${runtimeDir}
               services_dir="$runtime_dir/services"
+              # The TUI repoints this link at a fresh build's services
+              # directory. Both are searched before the store, so either
+              # shadows a built description on load and on reload.
+              current_dir="$runtime_dir/current"
               socket="''${DINIX_SOCKET_PATH:-$runtime_dir/control}"
               mkdir --parents "$services_dir" "$(dirname "$socket")"
-              # The runtime directory first, so a description written there
-              # shadows the built one when dinit loads or reloads the service.
               exec ${getExe' config.internal.dinitPackage "dinit"} \
                 --user \
                 --services-dir "$services_dir" \
+                --services-dir "$current_dir" \
                 ${config.internal.dinitArgs} \
                 --socket-path "$socket" \
                 "$@"

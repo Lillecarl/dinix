@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from dinit_client import protocol as p
+from textual.pilot import Pilot
 from textual.widgets import DataTable
 
 from dinix_tui import DinixApp
@@ -43,7 +46,11 @@ class FakeClient:
     async def list_services(self) -> dict[str, p.ServiceStatus]:
         return {name: _status(state) for name, state in self.states.items()}
 
+    async def query_load_mech(self) -> p.LoaderMech:
+        return p.LoaderMech(loader_type=p.LoaderType.DIRLOAD, cwd="/", dirs=())
+
     async def load(self, name: str) -> p.ServiceRecord:
+        self.states.setdefault(name, p.ServiceState.STOPPED)
         handle = self.handles.setdefault(name, len(self.handles) + 1)
         state = self.states[name]
         return p.ServiceRecord(state=state, handle=handle, target_state=state)
@@ -66,17 +73,27 @@ class FakeClient:
         return b"a log line\n"
 
 
-@asynccontextmanager
-async def fake_connector(_socket_path: str | None) -> AsyncIterator[FakeClient]:
-    yield FakeClient()
-
-
-def app_with(client: FakeClient) -> DinixApp:
+def app_with(client: FakeClient, **kwargs: object) -> DinixApp:
     @asynccontextmanager
     async def connector(_socket_path: str | None) -> AsyncIterator[FakeClient]:
         yield client
 
-    return DinixApp(connector=connector)
+    return DinixApp(connector=connector, **kwargs)
+
+
+async def _until(pilot: Pilot[None], predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+    with anyio.fail_after(timeout):
+        while not predicate():
+            await anyio.sleep(0.01)
+            await pilot.pause()
+
+
+def _build(tmp_path: Path, *names: str) -> Path:
+    build = tmp_path / "build"
+    (build / "services").mkdir(parents=True)
+    for name in names:
+        (build / "services" / name).write_text("type = internal\n")
+    return build
 
 
 async def test_rows_are_listed() -> None:
@@ -116,3 +133,51 @@ async def test_start_action_dispatches_to_the_client() -> None:
         app.action_start()
         await pilot.pause()
     assert ("start", "hello") in client.commands
+
+
+async def test_nix_reload_repoints_and_reloads_every_service(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    build = _build(tmp_path, "hello", "extra")
+    client = FakeClient()
+
+    async def rebuild() -> str:
+        return str(build)
+
+    app = app_with(client, runtime_dir=str(runtime), rebuilder=rebuild)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: app.query_one(DataTable).row_count == 2)
+        app.action_nix_reload()
+
+        def reloaded() -> set[str]:
+            return {name for action, name in client.commands if action == "reload"}
+
+        await _until(pilot, lambda: {"hello", "world", "extra"} <= reloaded())
+        table = app.query_one(DataTable)
+        assert table.get_cell("extra", "state") == "stopped"
+    assert os.readlink(runtime / "current") == str(build / "services")
+
+
+async def test_nix_reload_runs_the_configured_command(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    build = _build(tmp_path, "hello")
+    client = FakeClient()
+    app = app_with(
+        client,
+        runtime_dir=str(runtime),
+        nix_command=f"printf '%s\\n' {build}",
+    )
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: app.query_one(DataTable).row_count == 2)
+        app.action_nix_reload()
+        await _until(pilot, lambda: (runtime / "current").exists())
+    assert os.readlink(runtime / "current") == str(build / "services")
+    assert ("reload", "hello") in client.commands
+
+
+async def test_nix_reload_without_a_command_queues_nothing(tmp_path: Path) -> None:
+    app = app_with(FakeClient(), runtime_dir=str(tmp_path / "runtime"))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_nix_reload()
+        await pilot.pause()
+        assert app._commands.statistics().current_buffer_used == 0

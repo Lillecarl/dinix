@@ -9,11 +9,13 @@ log, one runs commands the UI queues.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+import os
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 
 import anyio
+from anyio import Path as AsyncPath
 from dinit_client import DinitClient, DinitError
 from dinit_client import protocol as p
 from textual import on, work
@@ -23,6 +25,16 @@ from textual.containers import Horizontal
 from textual.widgets import DataTable, Footer, Header, RichLog
 
 Connector = Callable[[str | None], AbstractAsyncContextManager[DinitClient]]
+Rebuilder = Callable[[], Awaitable[str]]
+
+
+class RebuildError(Exception):
+    """The rebuild command did not yield a usable configuration directory."""
+
+
+# The symbolic link under the runtime directory that the wrapper searches for
+# service descriptions, and that a nix reload repoints at the latest build.
+_POINTER = "current"
 
 
 @dataclass(frozen=True)
@@ -37,6 +49,19 @@ _ICONS: dict[p.ServiceState, str] = {
     p.ServiceState.STARTING: "…",
     p.ServiceState.STOPPING: "…",
 }
+
+
+def _default_runtime_dir(socket_path: str | None) -> str | None:
+    """Where the wrapper keeps the pointer, guessed from the environment.
+
+    The wrapper puts the socket at ``<DINIX_RUNTIME_DIR>/control``, so the
+    socket's directory is that runtime directory. With no socket on the command
+    line, the environment still names it.
+    """
+    if socket_path is not None:
+        return os.path.dirname(os.path.abspath(socket_path))
+    runtime_dir = os.environ.get("DINIX_RUNTIME_DIR")
+    return None if runtime_dir is None else os.path.abspath(runtime_dir)
 
 
 class DinixApp(App[None]):
@@ -54,6 +79,7 @@ class DinixApp(App[None]):
         Binding("r", "restart", "Restart"),
         Binding("R", "reload", "Reload"),
         Binding("l", "log", "Log"),
+        Binding("n", "nix_reload", "Nix reload"),
         Binding("f5", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -62,10 +88,21 @@ class DinixApp(App[None]):
         self,
         socket_path: str | None = None,
         connector: Connector | None = None,
+        *,
+        nix_command: str | None = None,
+        runtime_dir: str | None = None,
+        rebuilder: Rebuilder | None = None,
     ) -> None:
         super().__init__()
         self._socket_path = socket_path
         self._connector: Connector = connector or DinitClient.connect
+        self._nix_command = (
+            nix_command if nix_command is not None else os.environ.get("DINIX_TUI_NIX_COMMAND")
+        )
+        self._runtime_dir = (
+            runtime_dir if runtime_dir is not None else _default_runtime_dir(socket_path)
+        )
+        self._rebuilder = rebuilder
         self._selected: str | None = None
         self._known: set[str] = set()
         self._handle_names: dict[int, str] = {}
@@ -100,16 +137,25 @@ class DinixApp(App[None]):
         except DinitError as error:
             self._log(f"[red]dinit: {error}[/red]")
             self.notify(str(error), title="dinit", severity="error")
+        except Exception as error:  # a crash must show, not leave a dead screen
+            self._log(f"[red]tui: {error!r}[/red]")
+            self.notify(repr(error), title="tui", severity="error")
 
     async def _load_every_service(self, client: DinitClient) -> None:
-        # A handle is what makes dinit send events for a service, so load every
-        # one, remembering which handle belongs to which name.
-        services = await client.list_services()
-        for name in services:
+        # dinit lists only the services it has loaded, so the names have to
+        # come from the directories it searches. Resolving a handle is what
+        # makes dinit send events, so load every name found.
+        mech = await client.query_load_mech()
+        names: set[str] = set(await client.list_services())
+        for directory in mech.dirs:
+            path = AsyncPath(directory)
+            if await path.is_dir():
+                names.update(await self._names_in(path))
+        for name in sorted(names):
             record = await client.load(name)
             self._handle_names[record.handle] = name
         await self._refresh(client)
-        self._log(f"loaded {len(services)} service(s)")
+        self._log(f"loaded {len(names)} service(s)")
 
     async def _refresh(self, client: DinitClient) -> None:
         for name, status in (await client.list_services()).items():
@@ -129,14 +175,17 @@ class DinixApp(App[None]):
     async def _consume_commands(self, client: DinitClient) -> None:
         async for command in self._commands:
             try:
-                if command.action == "catlog" and command.service is not None:
+                if command.action == "nix-reload":
+                    await self._nix_reload(client)
+                elif command.action == "catlog" and command.service is not None:
                     data = await client.catlog(command.service)
                     self._log(data.decode("utf-8", "replace").rstrip() or "(empty log)")
                 elif command.service is not None:
                     await self._effect(client, command.action, command.service)
                 await self._refresh(client)
-            except DinitError as error:
-                self._log(f"[red]{command.action} failed: {error}[/red]")
+            except (DinitError, RebuildError, OSError) as error:
+                detail = str(error) or type(error).__name__
+                self._log(f"[red]{command.action} failed: {detail}[/red]")
 
     async def _effect(self, client: DinitClient, action: str, service: str) -> None:
         if action == "start":
@@ -149,6 +198,74 @@ class DinixApp(App[None]):
             await client.reload(service)
         else:
             self._log(f"[yellow]unknown action {action!r}[/yellow]")
+
+    # -- nix reload ------------------------------------------------------
+
+    async def _nix_reload(self, client: DinitClient) -> None:
+        """Rebuild the configuration, adopt it, and reload every service.
+
+        Only a description changes here. A running service keeps its process
+        until it is restarted, so the new command or dependencies take effect
+        on the next start.
+        """
+        self._log("nix reload: running the rebuild command")
+        config_dir = await self._rebuild()
+        services = AsyncPath(config_dir) / "services"
+        if not await services.is_dir():
+            raise RebuildError(f"{config_dir} has no services directory")
+        await self._point_at(services)
+        self._log(f"nix reload: adopted {config_dir}")
+
+        known = set(self._handle_names.values())
+        for name in sorted(await self._names_in(services)):
+            if name in known:
+                continue
+            record = await client.load(name)
+            self._handle_names[record.handle] = name
+            self._log(f"nix reload: loaded new service {name}")
+
+        count = 0
+        for name in sorted(set(self._handle_names.values())):
+            try:
+                await client.reload(name)
+                count += 1
+            except DinitError as error:
+                self._log(f"[yellow]nix reload: {name}: {error}[/yellow]")
+        self._log(f"nix reload: reloaded {count} service(s)")
+        self.notify("Nix reload complete")
+
+    async def _rebuild(self) -> str:
+        if self._rebuilder is not None:
+            return await self._rebuilder()
+        if self._nix_command is None:
+            raise RebuildError("no rebuild command configured")
+        result = await anyio.run_process(["sh", "-c", self._nix_command], check=False)
+        output = result.stdout.decode("utf-8", "replace")
+        if result.returncode != 0:
+            tail = "\n".join(output.strip().splitlines()[-3:])
+            raise RebuildError(f"command exited {result.returncode}: {tail}")
+        paths = [line.strip() for line in output.splitlines() if line.strip()]
+        if not paths:
+            raise RebuildError("the command printed no path")
+        return paths[-1]
+
+    async def _point_at(self, services: AsyncPath) -> None:
+        if self._runtime_dir is None:
+            self._log("[yellow]nix reload: no runtime directory; left the pointer alone[/yellow]")
+            return
+        runtime = AsyncPath(self._runtime_dir)
+        await runtime.mkdir(parents=True, exist_ok=True)
+        pointer = runtime / _POINTER
+        temporary = pointer.with_name(pointer.name + ".new")
+        with suppress(FileNotFoundError):
+            await temporary.unlink()
+        await temporary.symlink_to(services)
+        await temporary.rename(pointer)
+
+    @staticmethod
+    async def _names_in(services: AsyncPath) -> list[str]:
+        files = [entry.name async for entry in services.iterdir() if await entry.is_file()]
+        return sorted(files)
 
     # -- UI --------------------------------------------------------------
 
@@ -202,9 +319,33 @@ class DinixApp(App[None]):
         with suppress(anyio.WouldBlock):
             self._commands_send.send_nowait(Command("refresh"))
 
+    def action_nix_reload(self) -> None:
+        if self._rebuilder is None and self._nix_command is None:
+            self.notify(
+                "Set DINIX_TUI_NIX_COMMAND to enable nix reload",
+                severity="warning",
+            )
+            return
+        with suppress(anyio.WouldBlock):
+            self._commands_send.send_nowait(Command("nix-reload"))
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="dinix-tui", description=__doc__)
     parser.add_argument("--socket-path", default=None, help="dinit control socket to connect to")
+    parser.add_argument(
+        "--nix-command",
+        default=None,
+        help="shell command printed path to the rebuilt config directory (nix reload)",
+    )
+    parser.add_argument(
+        "--runtime-dir",
+        default=None,
+        help="directory holding the services pointer; defaults near the socket",
+    )
     arguments = parser.parse_args()
-    DinixApp(socket_path=arguments.socket_path).run()
+    DinixApp(
+        socket_path=arguments.socket_path,
+        nix_command=arguments.nix_command,
+        runtime_dir=arguments.runtime_dir,
+    ).run()
