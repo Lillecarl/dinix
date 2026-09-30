@@ -278,11 +278,17 @@ let
       ]))
       pkgs.jujutsu
       pkgs.git
+      pkgs.coreutils
     ];
     text = ''
       ${repoRoot}
       export PYTHONPATH="$root/dinit-client/src:$root/tui/src"
-      exec python -m pytest dinit-client/tests tui/tests "$@"
+      # A private basetemp. Otherwise pytest prunes the shared
+      # /tmp/pytest-of-$USER, and every read-only store file in another
+      # project's leftovers becomes its own warning.
+      basetemp="$(mktemp -d)"
+      trap 'rm --recursive --force "$basetemp"' EXIT
+      python -m pytest --basetemp="$basetemp" dinit-client/tests tui/tests "$@"
     '';
   };
 
