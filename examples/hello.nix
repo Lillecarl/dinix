@@ -4,7 +4,7 @@
 #
 #   nix run --file ./dev.nix examples.hello
 #   nix run --file ./examples/hello.nix config.userWrapper -- --user
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 import ../. {
   inherit pkgs;
   modules = [

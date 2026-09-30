@@ -6,7 +6,7 @@
 # through `options ? dinit`. See modular.nix and PORTING.md.
 #
 #   nix run --file ./dev.nix examples.api.modular
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 let
   stateDir = (import ../../service-lib.nix).stateDir;
 in

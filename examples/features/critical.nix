@@ -12,7 +12,7 @@
 # the instance carries on.
 #
 #   nix run --file ./dev.nix examples.features.critical
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 import ../.. {
   inherit pkgs;
   modules = [

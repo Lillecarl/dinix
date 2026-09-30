@@ -11,7 +11,7 @@
 #
 #   nix run --file ./dev.nix examples.services.redis
 #   nix run --file ./examples/services/redis.nix config.userWrapper -- --user
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 import ../.. {
   inherit pkgs;
   modules = [

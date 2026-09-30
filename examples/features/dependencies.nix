@@ -7,7 +7,7 @@
 #   after        order only, no start or stop coupling.
 #
 #   nix run --file ./dev.nix examples.features.dependencies
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 import ../.. {
   inherit pkgs;
   modules = [

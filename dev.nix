@@ -18,7 +18,7 @@
 # uid, and dinix renders a different configuration for each.
 #
 {
-  pkgs ? import <nixpkgs> { },
+  pkgs ? import <nixpkgs> { config.allowUnfree = true; },
   modules ? [ ./demo.nix ],
   # Same revision nixidae pins, so the two agree.
   nix2container-src ? builtins.fetchGit {

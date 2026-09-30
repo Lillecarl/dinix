@@ -12,7 +12,7 @@
 # Then connect with the package in this closure:
 #
 #   psql -h "$DINIX_STATE_DIR/postgres/run" -U postgres -d postgres
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 import ../.. {
   inherit pkgs;
   modules = [

@@ -11,7 +11,7 @@
 #
 #   nix run --file ./dev.nix containers.redis.copyToPodman
 #   podman run --rm -it -p 6379:6379 dinix-example-redis:latest
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 import ../.. {
   inherit pkgs;
   modules = [

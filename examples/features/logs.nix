@@ -9,7 +9,7 @@
 #            the volume has to.
 #
 #   nix run --file ./dev.nix examples.features.logs
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 let
   # dinit expands this when it loads the service, so the same store
   # configuration writes wherever DINIX_STATE_DIR points. See service-lib.nix.
