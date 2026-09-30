@@ -133,6 +133,34 @@ let
       touch $out
     '';
 
+  # Drives the whole stack against a real dinit: the Textual pilot, the app,
+  # the control client. Same two instances as the client's check, differing in
+  # the line hello prints; a nix reload points the runtime pointer at B and a
+  # restart proves the app adopted it.
+  tuiIntegration = pkgs.runCommand "tui-integration"
+    {
+      nativeBuildInputs = [
+        (pkgs.python3.withPackages (ps: [
+          ps.anyio
+          ps.pytest
+          ps.textual
+          dinitClient
+        ]))
+      ];
+      DINIX_TUI_TEST_DINIT = lib.getExe' clientInstanceA.config.package "dinit";
+      DINIX_TUI_TEST_INSTANCE_A = "${clientInstanceA.config.configDir}";
+      DINIX_TUI_TEST_INSTANCE_B = "${clientInstanceB.config.configDir}";
+      # withPackages drops a buildPythonApplication from PYTHONPATH (its
+      # pythonModule is false), so the app under test is named directly.
+      PYTHONPATH = lib.makeSearchPath pkgs.python3.sitePackages [ tui ];
+    }
+    ''
+      export HOME="$TMPDIR"
+      python -m pytest ${./tui/tests}/test_integration.py \
+        -o anyio_mode=auto -p no:cacheprovider
+      touch $out
+    '';
+
   # The Python tools below act on the working tree, not a store copy, so each
   # finds the repository root and works from any subdirectory. `jj root` first
   # because this is a jj repo; git and pwd cover the other cases.
@@ -168,21 +196,22 @@ let
     '';
   };
 
-  # Run the client's tests against the working tree, without a Nix build.
+  # Run the Python tests against the working tree, without a Nix build.
   test = pkgs.writeShellApplication {
     name = "dinix-test";
     runtimeInputs = [
       (pkgs.python3.withPackages (ps: [
         ps.anyio
         ps.pytest
+        ps.textual
       ]))
       pkgs.jujutsu
       pkgs.git
     ];
     text = ''
       ${repoRoot}
-      export PYTHONPATH="$root/dinit-client/src"
-      exec python -m pytest dinit-client/tests "$@"
+      export PYTHONPATH="$root/dinit-client/src:$root/tui/src"
+      exec python -m pytest dinit-client/tests tui/tests "$@"
     '';
   };
 
@@ -423,6 +452,10 @@ let
         name = "tui";
         path = tui;
       }
+      {
+        name = "tui-integration";
+        path = tuiIntegration;
+      }
     ]
     ++ lib.concatLists (
       lib.mapAttrsToList (
@@ -483,6 +516,7 @@ in
     lint
     test
     tui
+    tuiIntegration
     ;
 }
 // collections
