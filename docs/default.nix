@@ -1,11 +1,13 @@
-# dinix's option reference, rendered from the doc comments in options.nix.
+# dinix's documentation, rendered from what the repository already says.
 #
-#   nix build --file ./dev.nix docs
+#   nix build --file ./dev.nix docs.optionsCommonMark  # the option reference
+#   nix build --file ./dev.nix docs.site               # the Sphinx site
 #
-# This is the solid-kubernetes pattern with the site stripped: `nixosOptionsDoc`
-# walks an `options` tree and writes CommonMark, and `nixdoc` renders `/** */`
-# comments from a library file. dinix has no library of its own -- `default.nix`
-# returns nixpkgs' `lib` -- so the module options are the whole surface.
+# This is the solid-kubernetes pattern: `nixosOptionsDoc` walks an `options`
+# tree and writes CommonMark, and `./site.nix` assembles the pages Sphinx
+# builds. dinix has no library of its own -- `default.nix` returns nixpkgs'
+# `lib` -- so the module options are the whole surface, and no `nixdoc` step
+# is needed.
 #
 # The evaluation has `options` and no `config`, so a default that reads
 # `config` would throw when the doc writer serialises it. Every default is
@@ -84,6 +86,14 @@ let
 in
 {
   inherit (doc) optionsCommonMark optionsJSON;
+
+  # The site GitHub Pages serves. See ./site.nix.
+  site = pkgs.callPackage ./site.nix {
+    inherit (doc) optionsCommonMark;
+    readme = ../README.md;
+    porting = ../PORTING.md;
+    examplesReadme = ../examples/README.md;
+  };
 
   # The number that says whether this approach holds for dinix: an option whose
   # default cannot be rendered without a configuration is documentation debt to

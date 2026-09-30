@@ -163,12 +163,12 @@ collections.<service>.<mode>` runs it in one of four modes — `root` and
 and a port passes in all four. Nothing else needs editing, and no Python is
 written.
 
-{option}`privileged` says whether dinit will be root, and a collection reads it
+`privileged` says whether dinit will be root, and a collection reads it
 where that changes the configuration — which is `run-as` and nothing else,
 because an unprivileged dinit cannot change user at all. Whether a run is
 containerized is the test driver's business, not the configuration's.
 
-A data directory defaults to {option}`dinit.stateDir`, which is
+A data directory defaults to `dinit.stateDir`, which is
 `$DINIX_STATE_DIR/<service>`, or `/var/lib/<service>` when the variable is
 unset. The containers run writable, with
 a tmpfs for `/run` and one for the state directory, and dinix-init makes the
@@ -260,7 +260,7 @@ Six things change on the way across, and they are the whole of the work:
   mosquitto takes `persistence_location` in its configuration file and nowhere
   else, and writes to the working directory when it is unset. dinit
   substitutes `working-dir`, so the state directory reaches it. The build-time
-  check makes {option}`dirs` in a state directory of its own before it runs,
+  check makes `dirs` in a state directory of its own before it runs,
   because dinit-check exits 1 on a working directory that is absent and a
   directory dinix-init makes at startup always is — see `checkCommand` in
   `options.nix`. A `dirs` entry outside the state directory is still absent
@@ -311,7 +311,7 @@ Six things change on the way across, and they are the whole of the work:
 if it has not been initialised" is a conditional. PostgreSQL, MySQL and
 MongoDB all want one, and a shell is the usual answer.
 
-Use `dinix-unless` instead, which is {option}`unlessPackage`:
+Use `dinix-unless` instead, which is `unlessPackage`:
 
 ```nix
 services.init.process.argv = [

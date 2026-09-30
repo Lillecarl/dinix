@@ -8,6 +8,8 @@ and wraps `dinit` so it finds that directory with no arguments. The main use is
 supervising several processes inside one container image built from a Nix
 closure.
 
+Documentation: <https://lillecarl.github.io/dinix/>.
+
 ## Try it
 
 This serves "Hello World" on port 8080:

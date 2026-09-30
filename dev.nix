@@ -586,6 +586,10 @@ let
         path = docs.optionsCommonMark;
       }
       {
+        name = "docs-site";
+        path = docs.site;
+      }
+      {
         name = "dinit-client-integration";
         path = dinitClientIntegration;
       }

@@ -1,0 +1,69 @@
+# Publish the documentation site to GitHub Pages.
+#
+# The site is a Nix build (`docs.site` in dev.nix), so the runner needs Nix and
+# nothing else: no Python environment to keep in step with docs/conf.py.
+#
+# One setting cannot live in this file. Set Settings -> Pages -> Source to
+# "GitHub Actions" once; until then the configure-pages step fails and says so.
+# The deploy job then publishes, and later runs republish on every push.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# deploy-pages needs id-token to prove the run is this repository's, and
+# pages:write to publish.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. cancel-in-progress is off on purpose: a cancelled
+# deployment can leave the site half-published, and a queued run is only late.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@main
+        timeout-minutes: 10
+
+      - uses: cachix/install-nix-action@master
+        timeout-minutes: 15
+        with:
+          # The same unpinned nixpkgs ci.yml uses, so a docs failure and a
+          # checks failure mean the same thing about the same evaluation.
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+
+      # --out-link then a copy: upload-pages-artifact takes a directory, and a
+      # store symlink is a directory only after the action chooses to follow
+      # it. The copy costs kilobytes and removes the question.
+      - name: Build the site
+        timeout-minutes: 30
+        run: |
+          nix build --print-build-logs --file ./dev.nix docs.site
+          cp --recursive result site
+
+      - uses: actions/configure-pages@v5
+        timeout-minutes: 5
+
+      - uses: actions/upload-pages-artifact@v3
+        timeout-minutes: 5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+        timeout-minutes: 10
