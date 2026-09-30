@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dinix-tui"
+version = "0.1.0"
+description = "A Textual TUI for dinit services managed by dinix"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "anyio>=4.4",
+  "textual>=8",
+  "dinit-client",
+]
+
+[project.scripts]
+dinix-tui = "dinix_tui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dinix_tui"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config"
+anyio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"asyncio".msg = "Use anyio instead"

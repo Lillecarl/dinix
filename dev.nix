@@ -96,6 +96,9 @@ let
   # no dinix wrapper or image refers to it.
   dinitClient = pkgs.callPackage ./dinit-client/package.nix { };
 
+  # The Textual TUI, built on the client. Another developer output.
+  tui = pkgs.callPackage ./tui/package.nix { inherit dinitClient; };
+
   # Two dinix instances for the client's integration check, identical but for
   # the line the hello service prints. They arrive in the check as environment
   # variables, so the test suite can repoint a symlink from A to B and prove
@@ -150,8 +153,8 @@ let
     runtimeInputs = ruffInputs;
     text = ''
       ${repoRoot}
-      ruff check --fix dinit-client
-      ruff format dinit-client
+      ruff check --fix dinit-client tui
+      ruff format dinit-client tui
     '';
   };
 
@@ -160,8 +163,8 @@ let
     runtimeInputs = ruffInputs;
     text = ''
       ${repoRoot}
-      ruff check dinit-client
-      ruff format --check dinit-client
+      ruff check dinit-client tui
+      ruff format --check dinit-client tui
     '';
   };
 
@@ -416,6 +419,10 @@ let
         name = "dinit-client-integration";
         path = dinitClientIntegration;
       }
+      {
+        name = "tui";
+        path = tui;
+      }
     ]
     ++ lib.concatLists (
       lib.mapAttrsToList (
@@ -475,6 +482,7 @@ in
     format
     lint
     test
+    tui
     ;
 }
 // collections
