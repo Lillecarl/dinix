@@ -886,6 +886,27 @@ in
       '';
     };
 
+    tuiWrapper = mkOption {
+      type = types.package;
+      description = ''
+        dinit for a TUI-driven developer runtime.
+
+        Unlike {option}`userWrapper`, it reads its runtime directory from the
+        environment, so one store path serves every checkout. It searches a
+        writable `<DINIX_RUNTIME_DIR>/services` before the store's services, so
+        a description written there shadows the built one, and it puts its
+        control socket at `<DINIX_RUNTIME_DIR>/control`. `DINIX_RUNTIME_DIR`
+        defaults to `.dinix` in the working directory the wrapper is run from,
+        which lets a TUI keep everything under the repository it manages.
+
+        Its `dinitctl` and `dinit-monitor` use the same socket.
+
+        It is a shell script on purpose. {option}`containerWrapper` must stay
+        free of a shell and {option}`userWrapper` is left as it is; a developer
+        runtime can afford one.
+      '';
+    };
+
     internal = mkOption {
       type = types.submodule {
         options = {
@@ -1194,5 +1215,58 @@ in
           makeBinaryWrapper ${getExe' config.internal.dinitPackage "dinit-monitor"} $out/bin/dinit-monitor \
             --set-default DINIT_SOCKET_PATH ${config.socketPath}
         '';
+
+    # dinit for the TUI. A shell script, because the runtime directory comes
+    # from the environment and a binary wrapper cannot expand it. A separate
+    # output, so neither userWrapper nor containerWrapper grows a shell or an
+    # option it does not need.
+    tuiWrapper =
+      let
+        runtimeDir = ''
+          runtime_dir="''${DINIX_RUNTIME_DIR:-.dinix}"
+        '';
+      in
+      pkgs.symlinkJoin {
+        name = "${config.name}-tui";
+        meta.mainProgram = "dinit";
+        paths = [
+          (pkgs.writeShellApplication {
+            name = "dinit";
+            runtimeInputs = [ pkgs.coreutils ];
+            text = ''
+              ${runtimeDir}
+              services_dir="$runtime_dir/services"
+              socket="''${DINIX_SOCKET_PATH:-$runtime_dir/control}"
+              mkdir --parents "$services_dir" "$(dirname "$socket")"
+              # The runtime directory first, so a description written there
+              # shadows the built one when dinit loads or reloads the service.
+              exec ${getExe' config.internal.dinitPackage "dinit"} \
+                --user \
+                --services-dir "$services_dir" \
+                ${config.internal.dinitArgs} \
+                --socket-path "$socket" \
+                "$@"
+            '';
+          })
+          (pkgs.writeShellApplication {
+            name = "dinitctl";
+            text = ''
+              ${runtimeDir}
+              exec ${getExe' config.internal.dinitPackage "dinitctl"} \
+                --socket-path "''${DINIX_SOCKET_PATH:-$runtime_dir/control}" \
+                "$@"
+            '';
+          })
+          (pkgs.writeShellApplication {
+            name = "dinit-monitor";
+            text = ''
+              ${runtimeDir}
+              exec ${getExe' config.internal.dinitPackage "dinit-monitor"} \
+                --socket-path "''${DINIX_SOCKET_PATH:-$runtime_dir/control}" \
+                "$@"
+            '';
+          })
+        ];
+      };
   };
 }
