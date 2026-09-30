@@ -96,17 +96,20 @@ let
   # no dinix wrapper or image refers to it.
   dinitClient = pkgs.callPackage ./dinit-client/package.nix { };
 
-  # The dinix instance the client's integration check drives. Two services, no
-  # external daemon.
-  clientInstance = import ./. {
+  # Two dinix instances for the client's integration check, identical but for
+  # the line the hello service prints. They arrive in the check as environment
+  # variables, so the test suite can repoint a symlink from A to B and prove
+  # that reload re-reads the description from dinit's service directory list.
+  clientInstanceA = import ./dinit-client/tests/instance.nix { inherit pkgs; };
+  clientInstanceB = import ./dinit-client/tests/instance.nix {
     inherit pkgs;
-    modules = [ ./dinit-client/tests/real-dinit.nix ];
+    marker = "hello-from-swapped";
   };
 
   # Drives a real dinit through the client. The unit tests use a fake daemon;
-  # this proves the wire format, the native struct sizes and the events against
-  # dinit itself. The instance arrives as environment, and dinit runs with a
-  # socket path the check owns.
+  # this proves the wire format, the native struct sizes, the events and the
+  # reload path against dinit itself. dinit runs from an unbaked package so the
+  # check, not a wrapper, chooses the service directory.
   dinitClientIntegration = pkgs.runCommand "dinit-client-integration"
     {
       nativeBuildInputs = [
@@ -116,8 +119,9 @@ let
           dinitClient
         ]))
       ];
-      DINIT_CLIENT_TEST_DINIT = "${clientInstance.config.userWrapper}/bin/dinit";
-      DINIT_CLIENT_TEST_SERVICES_DIR = "${clientInstance.config.configDir}/services";
+      DINIT_CLIENT_TEST_DINIT = lib.getExe' clientInstanceA.config.package "dinit";
+      DINIT_CLIENT_TEST_INSTANCE_A = "${clientInstanceA.config.configDir}";
+      DINIT_CLIENT_TEST_INSTANCE_B = "${clientInstanceB.config.configDir}";
     }
     ''
       export HOME="$TMPDIR"
