@@ -99,6 +99,77 @@ let
   # The Textual TUI, built on the client. Another developer output.
   tui = pkgs.callPackage ./tui/package.nix { inherit dinitClient; };
 
+  # The example the README points at: a dinix instance with two services and
+  # the tuiWrapper that can run it. A single command starts a dinit from its
+  # store configuration and opens the TUI on it.
+  exampleInstance = import ./. {
+    inherit pkgs;
+    modules = [ ./examples/hello.nix ];
+  };
+
+  # What a real rebuild command would be, faked. It writes a fresh hello
+  # description into a build directory under the runtime and prints that
+  # directory, which is the contract nix reload expects. Rebuilding twice
+  # prints two different lines, so pressing n then r visibly changes the log.
+  exampleRebuild = pkgs.writeShellApplication {
+    name = "dinix-demo-rebuild";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      runtime_dir="''${DINIX_RUNTIME_DIR:-.dinix}"
+      build="$runtime_dir/build"
+      services="$build/services"
+      mkdir --parents "$services"
+      marker="$runtime_dir/.demo-marker"
+      if [ -e "$marker" ]; then
+        message="rebuilt: second marker"
+        rm --force "$marker"
+      else
+        message="rebuilt: first marker"
+        : > "$marker"
+      fi
+      run="$services/hello-run"
+      printf '#!/bin/sh\necho %s\nexec sleep 3600\n' "$message" > "$run"
+      chmod +x "$run"
+      printf 'type = process\ncommand = %s\nlog-type = buffer\n' "$run" > "$services/hello"
+      printf '%s\n' "$build"
+    '';
+  };
+
+  # The quick start: start dinit from the example's store configuration in a
+  # fresh runtime directory, then open the TUI on its socket. nix reload is
+  # wired to the demo rebuild, so the whole feature is exercisable at once.
+  example = pkgs.writeShellApplication {
+    name = "dinix-tui-example";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      if [ -n "''${DINIX_RUNTIME_DIR:-}" ]; then
+        runtime_dir="$DINIX_RUNTIME_DIR"
+      else
+        runtime_dir="$(mktemp -d)"
+        created=1
+      fi
+      export DINIX_RUNTIME_DIR="$runtime_dir"
+      export DINIX_TUI_NIX_COMMAND="${lib.getExe exampleRebuild}"
+
+      "${lib.getExe' exampleInstance.config.tuiWrapper "dinit"}" &
+      dinit_pid=$!
+      cleanup() {
+        kill "$dinit_pid" 2>/dev/null || true
+        wait "$dinit_pid" 2>/dev/null || true
+        [ -n "''${created:-}" ] && rm --recursive --force "$runtime_dir"
+      }
+      trap cleanup EXIT
+
+      socket="$runtime_dir/control"
+      for _ in $(seq 1 100); do
+        [ -S "$socket" ] && break
+        sleep 0.05
+      done
+
+      ${lib.getExe tui} --socket-path "$socket"
+    '';
+  };
+
   # Two dinix instances for the client's integration check, identical but for
   # the line the hello service prints. They arrive in the check as environment
   # variables, so the test suite can repoint a symlink from A to B and prove
@@ -512,6 +583,7 @@ in
     collections
     dinitClient
     dinitClientIntegration
+    example
     format
     lint
     test
