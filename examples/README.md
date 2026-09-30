@@ -19,6 +19,7 @@ line and sleeps, and `world` is internal. Both appear when the TUI connects.
 | `r` | restart the selected service |
 | `R` | reload the selected service's description |
 | `l` | print the selected service's log |
+| `f` | follow the selected service's log (poll the buffer) |
 | `n` | nix reload: rebuild and adopt the new configuration |
 | `f5` | refresh the service list |
 | `q` | quit |

@@ -7,9 +7,10 @@ from pathlib import Path
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from dinit_client import CommandRejected
 from dinit_client import protocol as p
 from textual.pilot import Pilot
-from textual.widgets import DataTable
+from textual.widgets import DataTable, RichLog
 
 from dinix_tui import DinixApp
 
@@ -35,6 +36,7 @@ class FakeClient:
         }
         self.handles: dict[str, int] = {}
         self.commands: list[tuple[str, str]] = []
+        self.logs: dict[str, bytes] = {}
         self._events_send, self._events = anyio.create_memory_object_stream(8)
 
     def subscribe(self) -> MemoryObjectReceiveStream[p.Event]:
@@ -70,7 +72,12 @@ class FakeClient:
         self.commands.append(("reload", name))
 
     async def catlog(self, name: str, *, clear: bool = False) -> bytes:
-        return b"a log line\n"
+        if name not in self.logs:
+            raise CommandRejected(f"{name} has no log buffer")
+        data = self.logs[name]
+        if clear:
+            self.logs[name] = b""
+        return data
 
 
 def app_with(client: FakeClient, **kwargs: object) -> DinixApp:
@@ -86,6 +93,10 @@ async def _until(pilot: Pilot[None], predicate: Callable[[], bool], timeout: flo
         while not predicate():
             await anyio.sleep(0.01)
             await pilot.pause()
+
+
+def _log_text(app: DinixApp) -> str:
+    return "\n".join(strip.text for strip in app.query_one(RichLog).lines)
 
 
 def _build(tmp_path: Path, *names: str) -> Path:
@@ -185,3 +196,37 @@ async def test_nix_reload_without_a_command_queues_nothing(tmp_path: Path) -> No
         app.action_nix_reload()
         await pilot.pause()
         assert app._commands.statistics().current_buffer_used == 0
+
+
+async def test_follow_streams_new_output() -> None:
+    client = FakeClient()
+    client.logs["hello"] = b"first line\n"
+    app = app_with(client)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: app.query_one(DataTable).row_count == 2)
+        table = app.query_one(DataTable)
+        table.move_cursor(row=table.get_row_index("hello"))
+        await pilot.pause()
+
+        app.action_follow()
+        await _until(pilot, lambda: "first line" in _log_text(app))
+
+        client.logs["hello"] = b"second line\n"
+        await _until(pilot, lambda: "second line" in _log_text(app))
+
+        app.action_follow()
+    assert app._following is None
+
+
+async def test_follow_clears_when_there_is_no_buffer() -> None:
+    client = FakeClient()
+    app = app_with(client)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: app.query_one(DataTable).row_count == 2)
+        table = app.query_one(DataTable)
+        table.move_cursor(row=table.get_row_index("world"))
+        await pilot.pause()
+
+        app.action_follow()
+        await _until(pilot, lambda: app._following is None)
+        assert "no log buffer" in _log_text(app)

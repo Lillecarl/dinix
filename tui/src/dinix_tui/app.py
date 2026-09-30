@@ -16,8 +16,9 @@ from dataclasses import dataclass
 
 import anyio
 from anyio import Path as AsyncPath
-from dinit_client import DinitClient, DinitError
+from dinit_client import CommandRejected, DinitClient, DinitError
 from dinit_client import protocol as p
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -80,6 +81,7 @@ class DinixApp(App[None]):
         Binding("r", "restart", "Restart"),
         Binding("R", "reload", "Reload"),
         Binding("l", "log", "Log"),
+        Binding("f", "follow", "Follow"),
         Binding("n", "nix_reload", "Nix reload"),
         Binding("f5", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
@@ -105,6 +107,7 @@ class DinixApp(App[None]):
         )
         self._rebuilder = rebuilder
         self._selected: str | None = None
+        self._following: str | None = None
         self._known: set[str] = set()
         self._handle_names: dict[int, str] = {}
         self._commands_send, self._commands = anyio.create_memory_object_stream(32)
@@ -113,7 +116,7 @@ class DinixApp(App[None]):
         yield Header()
         with Horizontal():
             yield DataTable(id="services")
-            yield RichLog(id="log", markup=True, wrap=True)
+            yield RichLog(id="log", markup=True, wrap=True, max_lines=2000)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -123,6 +126,9 @@ class DinixApp(App[None]):
         table.add_columns(("", "icon"), ("Service", "service"), ("State", "state"), ("PID", "pid"))
         self._run_client()
         self.set_interval(3.0, self.action_refresh)
+        # dinit has no push for service output, so following is a poll of the
+        # log buffer with the clear bit set.
+        self.set_interval(0.5, self._follow_tick)
 
     # -- connection worker ----------------------------------------------
 
@@ -176,6 +182,9 @@ class DinixApp(App[None]):
     async def _consume_commands(self, client: DinitClient) -> None:
         async for command in self._commands:
             try:
+                if command.action == "follow" and command.service is not None:
+                    await self._stream_log(client, command.service)
+                    continue
                 if command.action == "nix-reload":
                     await self._nix_reload(client)
                 elif command.action == "catlog" and command.service is not None:
@@ -187,6 +196,23 @@ class DinixApp(App[None]):
             except (DinitError, RebuildError, OSError) as error:
                 detail = str(error) or type(error).__name__
                 self._log(f"[red]{command.action} failed: {detail}[/red]")
+
+    async def _stream_log(self, client: DinitClient, service: str) -> None:
+        # The clear bit makes each poll return only what is new since the
+        # last one, which is the closest dinit gets to a log stream.
+        try:
+            data = await client.catlog(service, clear=True)
+        except CommandRejected:
+            if self._following == service:
+                self._following = None
+                self.notify(f"{service} has no log buffer", severity="warning")
+                self._log(f"[yellow]{service} has no log buffer[/yellow]")
+            return
+        if not data:
+            return
+        log = self.query_one(RichLog)
+        for line in data.decode("utf-8", "replace").splitlines():
+            log.write(Text.assemble((f"{service}| ", "dim"), line))
 
     async def _effect(self, client: DinitClient, action: str, service: str) -> None:
         if action == "start":
@@ -326,6 +352,26 @@ class DinixApp(App[None]):
 
     def action_log(self) -> None:
         self._dispatch("catlog")
+
+    def action_follow(self) -> None:
+        service = self._current_service()
+        if service is None:
+            self.notify("Select a service first", severity="warning")
+            return
+        if self._following == service:
+            self._following = None
+            self.notify(f"Stopped following {service}")
+            return
+        self._following = service
+        self.notify(f"Following {service}")
+        with suppress(anyio.WouldBlock):
+            self._commands_send.send_nowait(Command("follow", service))
+
+    def _follow_tick(self) -> None:
+        if self._following is None:
+            return
+        with suppress(anyio.WouldBlock):
+            self._commands_send.send_nowait(Command("follow", self._following))
 
     def action_refresh(self) -> None:
         with suppress(anyio.WouldBlock):
