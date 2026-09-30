@@ -99,6 +99,9 @@ let
   # The Textual TUI, built on the client. Another developer output.
   tui = pkgs.callPackage ./tui/package.nix { inherit dinitClient; };
 
+  # The option reference, rendered from the doc comments in options.nix.
+  docs = import ./docs { inherit pkgs; modules = [ ./demo.nix ]; };
+
   # The example the README points at: a dinix instance with two services and
   # the tuiWrapper that can run it. A single command starts a dinit from its
   # store configuration and opens the TUI on it.
@@ -522,6 +525,10 @@ let
         path = dinitClient;
       }
       {
+        name = "docs";
+        path = docs.optionsCommonMark;
+      }
+      {
         name = "dinit-client-integration";
         path = dinitClientIntegration;
       }
@@ -589,6 +596,7 @@ in
     collections
     dinitClient
     dinitClientIntegration
+    docs
     example
     format
     lint
