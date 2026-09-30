@@ -92,6 +92,63 @@ let
         cp $out/id_ed25519.pub $out/authorized_keys
       '';
 
+  # The dinit control protocol client, with its own tests. A developer output:
+  # no dinix wrapper or image refers to it.
+  dinitClient = pkgs.callPackage ./dinit-client/package.nix { };
+
+  # The Python tools below act on the working tree, not a store copy, so each
+  # finds the repository root and works from any subdirectory. `jj root` first
+  # because this is a jj repo; git and pwd cover the other cases.
+  repoRoot = ''
+    root=$(jj root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)
+    cd "$root"
+  '';
+
+  ruffInputs = [
+    pkgs.python3Packages.ruff
+    pkgs.jujutsu
+    pkgs.git
+  ];
+
+  # Format the Python, or check that it is already formatted.
+  format = pkgs.writeShellApplication {
+    name = "dinix-format";
+    runtimeInputs = ruffInputs;
+    text = ''
+      ${repoRoot}
+      ruff check --fix dinit-client
+      ruff format dinit-client
+    '';
+  };
+
+  lint = pkgs.writeShellApplication {
+    name = "dinix-lint";
+    runtimeInputs = ruffInputs;
+    text = ''
+      ${repoRoot}
+      ruff check dinit-client
+      ruff format --check dinit-client
+    '';
+  };
+
+  # Run the client's tests against the working tree, without a Nix build.
+  test = pkgs.writeShellApplication {
+    name = "dinix-test";
+    runtimeInputs = [
+      (pkgs.python3.withPackages (ps: [
+        ps.anyio
+        ps.pytest
+      ]))
+      pkgs.jujutsu
+      pkgs.git
+    ];
+    text = ''
+      ${repoRoot}
+      export PYTHONPATH="$root/dinit-client/src"
+      exec python -m pytest dinit-client/tests "$@"
+    '';
+  };
+
   /**
     One container test: an image from `extraModules`, and the guest that runs
     it.
@@ -317,6 +374,10 @@ let
         name = "container-rootless";
         path = rootlessTest;
       }
+      {
+        name = "dinit-client";
+        path = dinitClient;
+      }
     ]
     ++ lib.concatLists (
       lib.mapAttrsToList (
@@ -371,6 +432,10 @@ in
     containerTest
     rootlessTest
     collections
+    dinitClient
+    format
+    lint
+    test
     ;
 }
 // collections
