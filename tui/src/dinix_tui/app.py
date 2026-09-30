@@ -22,6 +22,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Header, RichLog
 
 Connector = Callable[[str | None], AbstractAsyncContextManager[DinitClient]]
@@ -291,12 +292,23 @@ class DinixApp(App[None]):
     def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._selected = str(event.row_key.value)
 
+    def _current_service(self) -> str | None:
+        # The cursor is the source of truth. RowHighlighted may not have fired
+        # yet on the first frame, and a service whose name is in the table is
+        # always the one under the cursor.
+        table = self.query_one(DataTable)
+        coordinate = Coordinate(table.cursor_row, 0)
+        if table.row_count == 0 or not table.is_valid_coordinate(coordinate):
+            return self._selected
+        return str(table.coordinate_to_cell_key(coordinate).row_key.value)
+
     def _dispatch(self, action: str) -> None:
-        if self._selected is None:
+        service = self._current_service()
+        if service is None:
             self.notify("Select a service first", severity="warning")
             return
         try:
-            self._commands_send.send_nowait(Command(action, self._selected))
+            self._commands_send.send_nowait(Command(action, service))
         except anyio.WouldBlock:
             self.notify("Command queue is full", severity="warning")
 

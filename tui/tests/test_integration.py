@@ -117,8 +117,9 @@ async def test_start_show_log_then_nix_reload_and_restart(tmp_path: Path) -> Non
         app = DinixApp(socket_path=socket, nix_command=f"echo {_INSTANCE_B}")
         async with app.run_test() as pilot:
             await _until(pilot, lambda: _state(app, "hello") == "stopped", app)
-
-            app._selected = "hello"
+            table = app.query_one(DataTable)
+            table.move_cursor(row=table.get_row_index("hello"))
+            await pilot.pause()
             await pilot.press("s")
             await _until(pilot, lambda: _state(app, "hello") == "started", app)
             assert _pid(app, "hello")

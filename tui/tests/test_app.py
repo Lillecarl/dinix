@@ -103,6 +103,8 @@ async def test_rows_are_listed() -> None:
         table = app.query_one(DataTable)
         assert table.row_count == 2
         assert table.get_cell("world", "state") == "started"
+        # Selection comes from the cursor, so it exists before any key press.
+        assert app._current_service() == "hello"
 
 
 async def test_event_updates_a_row() -> None:
@@ -124,13 +126,15 @@ async def test_event_updates_a_row() -> None:
         assert table.get_cell("hello", "pid") == "99"
 
 
-async def test_start_action_dispatches_to_the_client() -> None:
+async def test_start_uses_the_highlighted_row() -> None:
     client = FakeClient()
     app = app_with(client)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._selected = "hello"
-        app.action_start()
+        table = app.query_one(DataTable)
+        table.move_cursor(row=table.get_row_index("hello"))
+        await pilot.pause()
+        await pilot.press("s")
         await pilot.pause()
     assert ("start", "hello") in client.commands
 
