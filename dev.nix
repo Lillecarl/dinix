@@ -96,6 +96,36 @@ let
   # no dinix wrapper or image refers to it.
   dinitClient = pkgs.callPackage ./dinit-client/package.nix { };
 
+  # The dinix instance the client's integration check drives. Two services, no
+  # external daemon.
+  clientInstance = import ./. {
+    inherit pkgs;
+    modules = [ ./dinit-client/tests/real-dinit.nix ];
+  };
+
+  # Drives a real dinit through the client. The unit tests use a fake daemon;
+  # this proves the wire format, the native struct sizes and the events against
+  # dinit itself. The instance arrives as environment, and dinit runs with a
+  # socket path the check owns.
+  dinitClientIntegration = pkgs.runCommand "dinit-client-integration"
+    {
+      nativeBuildInputs = [
+        (pkgs.python3.withPackages (ps: [
+          ps.anyio
+          ps.pytest
+          dinitClient
+        ]))
+      ];
+      DINIT_CLIENT_TEST_DINIT = "${clientInstance.config.userWrapper}/bin/dinit";
+      DINIT_CLIENT_TEST_SERVICES_DIR = "${clientInstance.config.configDir}/services";
+    }
+    ''
+      export HOME="$TMPDIR"
+      python -m pytest ${./dinit-client/tests}/test_real_dinit.py \
+        -o anyio_mode=auto -p no:cacheprovider
+      touch $out
+    '';
+
   # The Python tools below act on the working tree, not a store copy, so each
   # finds the repository root and works from any subdirectory. `jj root` first
   # because this is a jj repo; git and pwd cover the other cases.
@@ -378,6 +408,10 @@ let
         name = "dinit-client";
         path = dinitClient;
       }
+      {
+        name = "dinit-client-integration";
+        path = dinitClientIntegration;
+      }
     ]
     ++ lib.concatLists (
       lib.mapAttrsToList (
@@ -433,6 +467,7 @@ in
     rootlessTest
     collections
     dinitClient
+    dinitClientIntegration
     format
     lint
     test
