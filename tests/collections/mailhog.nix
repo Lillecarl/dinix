@@ -31,9 +31,11 @@ in
         expect = "total";
       }
       {
+        # The v1 endpoint answers with a bare array, so there is no field to
+        # match. The status code is what says the endpoint is there.
         name = "and on its v1 API";
-        command = api "/api/v1/messages";
-        expect = "total";
+        command = "${curl} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${toString main.apiPort}/api/v1/messages";
+        expect = "200";
       }
     ];
   };

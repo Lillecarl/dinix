@@ -73,6 +73,12 @@ in
         (lib.getExe' cfg.package "mongod")
         "--dbpath"
         cfg.dataDir
+        # mongod makes a Unix socket in /tmp by default, and an unprivileged
+        # user in a container cannot write there, so it fails to set up its
+        # transport at all. The state directory is the one place that is always
+        # writable, and the socket belongs under it anyway.
+        "--unixSocketPrefix"
+        cfg.dataDir
         "--port"
         (toString cfg.port)
       ]

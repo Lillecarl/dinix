@@ -454,9 +454,9 @@ follows is the one thing that was not obvious about it.
 | `mailpit.nix` | no configuration file at all. `--database` is not optional in practice: without it mailpit writes a temporary file under `$TMPDIR`. |
 | `mosquitto.nix` | `persistence_location` exists only in the configuration file, so a persistent broker gets its path as `working-dir`. `user root` stops it dropping to `nobody` and losing the ability to write. |
 | `caddy.nix` | the state directory arrives as `XDG_DATA_HOME` and `XDG_CONFIG_HOME`, so `env` carries it. |
-| `mongodb.nix` | `mongodb-ce` is unfree, so the package set needs `config.allowUnfree`. The storage path is a command-line flag, so there is no config file. |
+| `mongodb.nix` | `mongodb-ce` is unfree, so the package set needs `config.allowUnfree`. The storage path is a command-line flag, so there is no config file. Its Unix socket defaults to `/tmp`, which an unprivileged container user cannot write, so it is pointed under the state directory. |
 | `meilisearch.nix` | configured only through `MEILI_*` variables, the database path among them, so `env` carries them. |
-| `mailhog.nix` | no configuration file and nothing on disk. The binary is `MailHog`, which is not the package name. |
+| `mailhog.nix` | no configuration file and nothing on disk. The binary is `MailHog`, which is not the package name. Its v1 API answers with a bare array rather than an object, so a check reads the status code and not a field. |
 | `garage.nix` | the data directories are not a flag and not an environment override, so the TOML is written at startup, and a scripted sub-service applies the cluster layout once. One of the rare ports whose image carries a shell. |
 | `kubernetes.nix` | the control plane is ordinary unprivileged userland — no cgroup, no container — so it needs no root; a node that runs pods does, so kwok answers for the nodes instead. The certificates and the kubeconfig cannot live in a store path, so a scripted sub-service writes them with openssl, which makes this a second shell port. etcd refuses to start unless `--initial-cluster` agrees with `--initial-advertise-peer-urls`. |
 
